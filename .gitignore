@@ -218,3 +218,6 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# options-desk: daily market data snapshots (regenerable, don't commit)
+data/snapshots/

@@ -1,0 +1,44 @@
+[build-system]
+requires = ["setuptools>=69"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "optdesk"
+version = "0.1.0"
+description = "Options desk toolkit: pricing, vol surfaces, hedging and market-making simulators."
+readme = "README.md"
+requires-python = ">=3.11"
+authors = [{ name = "Arjun Chowdhry" }]
+dependencies = [
+    "numpy>=2.1",
+    "scipy>=1.14.1",
+    "pandas>=2.2.3",
+    "pyarrow>=18.0",
+    "yfinance>=0.2.50",
+    "plotly>=5.24",
+    "streamlit>=1.40",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.3",
+    "pytest-cov>=6.0",
+    "hypothesis>=6.120",
+    "ruff>=0.8",
+]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra"
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+# E/F: pycodestyle + pyflakes, I: import sorting, B: bugbear, UP: modern syntax, NPY: numpy rules
+select = ["E", "F", "I", "B", "UP", "NPY"]
