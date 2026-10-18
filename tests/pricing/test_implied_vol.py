@@ -12,7 +12,7 @@ from hypothesis import strategies as st
 
 from optdesk.pricing.black_scholes import bs_price
 from optdesk.pricing.greeks import vega
-from optdesk.pricing.implied_vol import implied_vol
+from optdesk.pricing.implied_vol import _brent, implied_vol
 
 # --- Textbook value ----------------------------------------------------------------------------
 
@@ -107,6 +107,14 @@ def test_nan_outside_no_arbitrage_bounds():
     # Just inside the bounds a vol does exist.
     assert np.isfinite(implied_vol(call_lo + 0.5, S, K, T, r, q, True))
     assert np.isfinite(implied_vol(pv_s - 0.5, S, K, T, r, q, True))
+
+
+def test_brent_fallback_returns_nan_when_it_cannot_bracket():
+    """The fallback's two safety exits: a price below what a near-zero vol gives (no time
+    value to fit), and one that would need a vol above the 10,000 % search cap."""
+    assert np.isnan(_brent(1e-12, 100.0, 100.0, 1.0, 0.0, 0.0, True))
+    # With T = 1e-4, even sigma = 100 only prices this ATM call at about 38.
+    assert np.isnan(_brent(50.0, 100.0, 100.0, 1e-4, 0.0, 0.0, True))
 
 
 def test_nan_at_expiry():
