@@ -283,3 +283,56 @@ Interp:     r(T) linear between knots, flat outside
    An OIS/SOFR discount curve (the rate collateralized trades actually earn), bootstrapped from
    many instruments. For equity options it can also *imply* the rate from box spreads or from
    put-call parity across strikes.
+
+---
+
+## 6. Fetching chains (`fetch.py`)
+
+### Why it works
+yfinance scrapes Yahoo Finance: `Ticker("SPY").options` lists the expiries, and
+`option_chain(expiry)` returns a calls table, a puts table and the underlying's quote. We stack
+every expiry's calls and puts into one long table (`expiry`, `option_type`, `strike`, `bid`,
+`ask`, `last`, `last_trade`, `volume`, `open_interest`, plus `spot` and the download time
+`asof`). The quotes stay **raw**: no filtering at download time, so cleaning rules can change
+later and be re-run on old snapshots.
+
+It's the only module that touches the network. In tests a fake `Ticker` serves a saved chain,
+and real network connections are blocked, so the suite proves it runs offline.
+
+**Why the saved chain is synthetic.** A real chain has no answer key. Ours is generated from
+Black-Scholes with a known forward, rate and smile, so the tests can check the cleaner finds
+the *right* forward and vols, not just *some* numbers. Bad quotes (zero bids, crossed, wide,
+stale) are planted on purpose.
+
+**Data caveats to know cold:** Yahoo quotes can be ~15 minutes delayed. Outside market hours
+many bids and asks show as 0. Bid, ask and last trade aren't synchronized (the last trade may
+be hours old). US single-stock and ETF options (SPY) are *American*, while SPX is European and
+cash-settled.
+
+### Key facts
+```
+OCC symbol:  SPY261023C00580000  = root, YYMMDD, C/P, strike × 1000 (8 digits)
+Expiry:      equity options stop trading at 4:00pm New York time on expiry day
+Contract:    100 shares per contract (dollar price × 100 = premium paid)
+```
+
+### Interview questions
+1. **Why not use the `last` price to compute implied vol?**
+   The last trade can be hours old, so it doesn't match the current spot, and it was at the bid
+   or the ask, not fair value. The mid of the current bid and ask is simultaneous with the
+   underlying quote and unbiased between buyer and seller.
+2. **What's the difference between SPY and SPX options?**
+   SPY options are American, physically settled in ETF shares, and the ETF pays dividends.
+   SPX options are European, cash-settled, 10× bigger notional, and mostly PM-settled with
+   some AM-settled expiries. SPX has Section 1256 tax treatment. European exercise makes SPX
+   the cleaner input for Black-Scholes and vol surfaces.
+3. **Why do bids show as zero after hours?**
+   Market makers pull their quotes when the market closes, so there's no live bid. Data
+   vendors show 0 or the last value. That's why snapshots should be taken during the session.
+4. **What's open interest vs volume?**
+   Volume is the number of contracts traded today. Open interest is the number of contracts
+   outstanding, updated once a day by the OCC. High OI with low volume means a lot of existing
+   positions but little trading today.
+5. **Why store raw data rather than cleaned data?**
+   Cleaning involves judgment calls (spread thresholds, staleness). Keeping the raw quotes lets
+   you change those rules and re-run history. You can't recover quotes you threw away.
