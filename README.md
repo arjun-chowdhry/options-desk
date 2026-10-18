@@ -119,3 +119,50 @@ where they cross; the synthetic SSVI surface passing both checks; de-Americanizi
 the true forward (0.5bp) and vols, and skipping it showing the known bias; early-exercise
 premium of zero where theory says so (Merton's call, puts at zero rates) and matching a
 4,000-step reference elsewhere.
+
+## Hedging simulator (`optdesk.sim`)
+
+| Module | What it does | Key design choice |
+| --- | --- | --- |
+| `paths.py` | GBM paths (exact) and Heston stochastic-vol paths | GBM stepped with its exact solution (no discretization error); Heston by full-truncation Euler, the least-biased of the simple fixes for negative variance |
+| `hedging.py` | Buy or sell an option, delta-hedge it at the implied vol along every path, with proportional transaction costs; the gamma-P&L formula; the Derman-Kamal hedging-error estimate | Simulate once, hedge the *same* paths at every frequency, so differences come from hedging and not from luck; P&L in today's money |
+| `plot.py` | The 5,000-path study and its charts; `python -m optdesk.sim.plot` | Static PNGs (matplotlib) for the README and notes; the interactive version is for the app (M5) |
+
+A 3-month ATM call bought at 20% implied vol and delta-hedged on 5,000 paths, from monthly
+(3 hedges) to hourly (441):
+
+![Hedging frequency](docs/images/hedge_frequency.png)
+
+When realized vol is 20%, the mean P&L is zero at every frequency and the spread falls like
+`1/√N` (log-log slope −0.48), on top of the Derman-Kamal formula: $1.82 monthly, $0.17 hourly.
+When realized vol differs, the average P&L matches the gamma formula `∫ ½ΓS²(σ²_realized −
+σ²_implied) dt` and the Black-Scholes value gap: +$0.99 for 25% realized, −$0.99 for 15%.
+
+![Gamma P&L](docs/images/gamma_pnl.png)
+
+More charts: [P&L histograms](docs/images/hedge_pnl_histograms.png),
+[transaction costs](docs/images/hedge_costs.png).
+
+```powershell
+python -m optdesk.sim.plot     # runs the study, prints the tables, writes docs/images/*.png
+```
+
+```python
+from optdesk.sim.hedging import delta_hedge, gamma_pnl
+from optdesk.sim.paths import gbm_paths
+
+paths = gbm_paths(S0=100, mu=0.04 - 0.013, sigma=0.25, T=0.25, n_steps=441, n_paths=5000, rng=1)
+res = delta_hedge(paths, K=100, r=0.04, hedge_vol=0.20, q=0.013, rebalance_every=7, cost=0.0005)
+res.pnl.mean(), res.pnl.std(), res.costs.mean()
+gamma_pnl(paths, K=100, r=0.04, hedge_vol=0.20, q=0.013).mean()  # what the gamma formula predicts
+```
+
+How it's tested: GBM moments, normality and the martingale property; GBM giving the same
+distribution on any grid; the Heston variance mean-reverting as `θ + (v0 − θ)e^(−κt)`, the
+martingale property, correlation ρ between shocks, no negative variance when Feller fails,
+and reduction to GBM with no vol of vol. Hedging: zero mean P&L at fair vol (also under a 15%
+real-world drift), std slope −½ and within 10% of Derman-Kamal, the right sign when realized
+≠ implied, mean P&L equal to the gamma formula and to `BS(realized) − BS(implied)` within 4
+standard errors, the formula tracking P&L path by path under GBM and Heston, hedged
+put-call parity (exact to 1e-10 without dividends), short = −long exactly, and costs that are
+non-negative, grow with frequency and lower P&L by exactly their amount.
