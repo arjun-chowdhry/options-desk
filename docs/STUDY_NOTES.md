@@ -1,8 +1,11 @@
-# Study notes: M1 pricing
+# Study notes
 
-One section per piece of the pricing module: why it works, the formulas you should be able
-to write from memory, and interview-style questions with answers. Code lives in
-`src/optdesk/pricing/`; the tests in `tests/pricing/` are the proof each claim holds.
+One section per piece of the toolkit: why it works, the formulas you should be able to write
+from memory, and interview-style questions with answers. Code lives in `src/optdesk/`; the
+tests in `tests/` are the proof each claim holds.
+
+- **M1 Pricing** (`pricing/`): sections 1–4
+- **M2 Data** (`data/`): sections 5–8
 
 Notation: spot `S`, strike `K`, expiry `T` in years, rate `r`, dividend yield `q`, vol `σ`,
 forward `F = S·e^((r−q)T)`, `N` the standard normal CDF, `n` its density.
@@ -225,3 +228,58 @@ Error vs Black-Scholes (European):  O(1/N), oscillating
    extrapolation or replacing the last step with Black-Scholes values (the BBS method).
    Doubling `N` roughly halves the error but quadruples the work, since an `N`-step tree has
    about `N²/2` nodes.
+
+---
+
+# M2: Market data
+
+Notation as above, plus discount factor `DF = e^(−rT)`, mid `= (bid + ask)/2`, and
+log-moneyness `k = ln(K/F)`.
+
+## 5. Risk-free rates (`rates.py`)
+
+### Why it works
+Every price and implied vol needs a discount rate. We take it from US Treasuries, the standard
+proxy for the risk-free dollar rate, using three yield indices Yahoo publishes: `^IRX`
+(13-week bill), `^FVX` (5-year) and `^TNX` (10-year). The package uses continuous compounding
+everywhere, but each market quotes its own way, so every quote is converted first:
+
+- **T-bills** trade at a *discount*: the quote `d` says the price is `1 − d·days/360`.
+  We find the continuous `r` that discounts 1 to that price over `days/365` years.
+- **Notes** are quoted as a semiannual *bond-equivalent yield* `y`. Equal growth means
+  `(1 + y/2)^(2T) = e^(rT)`, so `r = 2·ln(1 + y/2)`.
+
+Between maturities we interpolate the rate linearly in `T`, and we hold it flat beyond the
+first and last points. Rates are known to within a few basis points while vol is uncertain
+by whole points, so a rate error moves option prices much less than vol uncertainty does and
+this simple curve is good enough. A rates desk would bootstrap a full
+SOFR/OIS curve instead.
+
+### Key formulas
+```
+T-bill:     price = 1 − d·days/360          r = −ln(price) / (days/365)
+Note:       r = 2·ln(1 + y/2)               (general: r = m·ln(1 + y/m))
+Discount:   DF(T) = e^(−r(T)·T)
+Interp:     r(T) linear between knots, flat outside
+```
+
+### Interview questions
+1. **Why is a T-bill's discount yield lower than its true yield?**
+   It divides the dollar discount by *face value*, but you actually invest the (lower) price,
+   and it uses a 360-day year. Both conventions make the quoted number understate the return.
+2. **Continuous vs semiannual: which number is bigger for the same investment?**
+   The semiannual yield. Compounding more often needs a lower stated rate to produce the
+   same growth, and continuous is the limit, so `r_cont < y_semi` (4% semiannual ≈ 3.96%
+   continuous).
+3. **Why use continuous compounding in derivatives pricing?**
+   Discount factors multiply cleanly (`e^(−r₁t₁)·e^(−r₂t₂)`), forwards are `S·e^((r−q)T)`,
+   and the math of Black-Scholes is in continuous time. One convention avoids mistakes.
+4. **How much does a rate error matter for an option price?**
+   About rho × error. A 3-month ATM option on a $100 stock has rho ≈ 12.5 (per 1.00 rate)
+   and vega ≈ 20 (per 1.00 vol), so a 10bp rate error moves it ~1.2¢, less than a 0.1
+   vol-point error (~2¢). Vol is uncertain by whole points, rates by a few bp. Rates matter
+   more for long expiries and deep ITM options.
+5. **What would a real desk use instead of Treasuries?**
+   An OIS/SOFR discount curve (the rate collateralized trades actually earn), bootstrapped from
+   many instruments. For equity options it can also *imply* the rate from box spreads or from
+   put-call parity across strikes.
