@@ -58,9 +58,13 @@ data/snapshots/   gitignored, {TICKER}/{YYYY-MM-DD}.parquet
   implied vol (Newton with Brent fallback, NaN outside no-arb bounds); CRR binomial with
   American exercise. Tests: Hull values, put-call parity (Hypothesis), every Greek vs finite
   difference, price bounds, IV round-trip, binomial converges to BS, American put >= European.
-- [ ] **M2 Data:** fetch chain (yfinance), clean (drop zero bids, crossed/wide/stale quotes;
-  mid; T; forward from parity; IV), Parquet snapshots. Tests use a fixture chain plus a mocked
-  yfinance.
+- [ ] **M2 Data** (code complete, live test pending): fetch chain (yfinance), clean (drop zero
+  bids, crossed/wide/stale quotes; mid; T; forward from parity; IV), Parquet snapshots. Tests
+  use a fixture chain plus a mocked yfinance.
+  - [x] Code, offline tests, README section, study notes (merged to main).
+  - [ ] Live-fetch test on Monday 2026-10-19 during market hours (9:30am–4pm New York):
+    `python -m optdesk.data.fetch SPY --max-expiries 6`. Check that the snapshot saves, most
+    quotes survive cleaning, forwards are near spot, and ATM vols look sensible.
 - [ ] **M3 Surface:** raw SVI fit per expiry with parameter bounds; butterfly check (Gatheral
   g(k) >= 0) and calendar check (w non-decreasing in T); Plotly 3D surface + smiles. Tests:
   parameter recovery, Axel Vogt arbitrage example flagged, crossed slices flagged.

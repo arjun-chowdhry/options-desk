@@ -1,8 +1,11 @@
-# Study notes: M1 pricing
+# Study notes
 
-One section per piece of the pricing module: why it works, the formulas you should be able
-to write from memory, and interview-style questions with answers. Code lives in
-`src/optdesk/pricing/`; the tests in `tests/pricing/` are the proof each claim holds.
+One section per piece of the toolkit: why it works, the formulas you should be able to write
+from memory, and interview-style questions with answers. Code lives in `src/optdesk/`; the
+tests in `tests/` are the proof each claim holds.
+
+- **M1 Pricing** (`pricing/`): sections 1–4
+- **M2 Data** (`data/`): sections 5–8
 
 Notation: spot `S`, strike `K`, expiry `T` in years, rate `r`, dividend yield `q`, vol `σ`,
 forward `F = S·e^((r−q)T)`, `N` the standard normal CDF, `n` its density.
@@ -225,3 +228,222 @@ Error vs Black-Scholes (European):  O(1/N), oscillating
    extrapolation or replacing the last step with Black-Scholes values (the BBS method).
    Doubling `N` roughly halves the error but quadruples the work, since an `N`-step tree has
    about `N²/2` nodes.
+
+---
+
+# M2: Market data
+
+Notation as above, plus discount factor `DF = e^(−rT)`, mid `= (bid + ask)/2`, and
+log-moneyness `k = ln(K/F)`.
+
+## 5. Risk-free rates (`rates.py`)
+
+### Why it works
+Every price and implied vol needs a discount rate. We take it from US Treasuries, the standard
+proxy for the risk-free dollar rate, using three yield indices Yahoo publishes: `^IRX`
+(13-week bill), `^FVX` (5-year) and `^TNX` (10-year). The package uses continuous compounding
+everywhere, but each market quotes its own way, so every quote is converted first:
+
+- **T-bills** trade at a *discount*: the quote `d` says the price is `1 − d·days/360`.
+  We find the continuous `r` that discounts 1 to that price over `days/365` years.
+- **Notes** are quoted as a semiannual *bond-equivalent yield* `y`. Equal growth means
+  `(1 + y/2)^(2T) = e^(rT)`, so `r = 2·ln(1 + y/2)`.
+
+Between maturities we interpolate the rate linearly in `T`, and we hold it flat beyond the
+first and last points. Rates are known to within a few basis points while vol is uncertain
+by whole points, so a rate error moves option prices much less than vol uncertainty does and
+this simple curve is good enough. A rates desk would bootstrap a full
+SOFR/OIS curve instead.
+
+### Key formulas
+```
+T-bill:     price = 1 − d·days/360          r = −ln(price) / (days/365)
+Note:       r = 2·ln(1 + y/2)               (general: r = m·ln(1 + y/m))
+Discount:   DF(T) = e^(−r(T)·T)
+Interp:     r(T) linear between knots, flat outside
+```
+
+### Interview questions
+1. **Why is a T-bill's discount yield lower than its true yield?**
+   It divides the dollar discount by *face value*, but you actually invest the (lower) price,
+   and it uses a 360-day year. Both conventions make the quoted number understate the return.
+2. **Continuous vs semiannual: which number is bigger for the same investment?**
+   The semiannual yield. Compounding more often needs a lower stated rate to produce the
+   same growth, and continuous is the limit, so `r_cont < y_semi` (4% semiannual ≈ 3.96%
+   continuous).
+3. **Why use continuous compounding in derivatives pricing?**
+   Discount factors multiply cleanly (`e^(−r₁t₁)·e^(−r₂t₂)`), forwards are `S·e^((r−q)T)`,
+   and the math of Black-Scholes is in continuous time. One convention avoids mistakes.
+4. **How much does a rate error matter for an option price?**
+   About rho × error. A 3-month ATM option on a $100 stock has rho ≈ 12.5 (per 1.00 rate)
+   and vega ≈ 20 (per 1.00 vol), so a 10bp rate error moves it ~1.2¢, less than a 0.1
+   vol-point error (~2¢). Vol is uncertain by whole points, rates by a few bp. Rates matter
+   more for long expiries and deep ITM options.
+5. **What would a real desk use instead of Treasuries?**
+   An OIS/SOFR discount curve (the rate collateralized trades actually earn), bootstrapped from
+   many instruments. For equity options it can also *imply* the rate from box spreads or from
+   put-call parity across strikes.
+
+---
+
+## 6. Fetching chains (`fetch.py`)
+
+### Why it works
+yfinance scrapes Yahoo Finance: `Ticker("SPY").options` lists the expiries, and
+`option_chain(expiry)` returns a calls table, a puts table and the underlying's quote. We stack
+every expiry's calls and puts into one long table (`expiry`, `option_type`, `strike`, `bid`,
+`ask`, `last`, `last_trade`, `volume`, `open_interest`, plus `spot` and the download time
+`asof`). The quotes stay **raw**: no filtering at download time, so cleaning rules can change
+later and be re-run on old snapshots.
+
+It's the only module that touches the network. In tests a fake `Ticker` serves a saved chain,
+and real network connections are blocked, so the suite proves it runs offline.
+
+**Why the saved chain is synthetic.** A real chain has no answer key. Ours is generated from
+Black-Scholes with a known forward, rate and smile, so the tests can check the cleaner finds
+the *right* forward and vols, not just *some* numbers. Bad quotes (zero bids, crossed, wide,
+stale) are planted on purpose.
+
+**Data caveats to know cold:** Yahoo quotes can be ~15 minutes delayed. Outside market hours
+many bids and asks show as 0. Bid, ask and last trade aren't synchronized (the last trade may
+be hours old). US single-stock and ETF options (SPY) are *American*, while SPX is European and
+cash-settled.
+
+### Key facts
+```
+OCC symbol:  SPY261023C00580000  = root, YYMMDD, C/P, strike × 1000 (8 digits)
+Expiry:      equity options stop trading at 4:00pm New York time on expiry day
+Contract:    100 shares per contract (dollar price × 100 = premium paid)
+```
+
+### Interview questions
+1. **Why not use the `last` price to compute implied vol?**
+   The last trade can be hours old, so it doesn't match the current spot, and it was at the bid
+   or the ask, not fair value. The mid of the current bid and ask is simultaneous with the
+   underlying quote and unbiased between buyer and seller.
+2. **What's the difference between SPY and SPX options?**
+   SPY options are American, physically settled in ETF shares, and the ETF pays dividends.
+   SPX options are European, cash-settled and 10× bigger notional; standard monthlies settle
+   on the opening print (AM), weeklies (SPXW) on the close (PM). SPX also gets Section 1256
+   tax treatment. European exercise makes SPX
+   the cleaner input for Black-Scholes and vol surfaces.
+3. **Why do bids show as zero after hours?**
+   Market makers pull their quotes when the market closes, so there's no live bid. Data
+   vendors show 0 or the last value. That's why snapshots should be taken during the session.
+4. **What's open interest vs volume?**
+   Volume is the number of contracts traded today. Open interest is the number of contracts
+   outstanding, updated once a day by the OCC. High OI with low volume means a lot of existing
+   positions but little trading today.
+5. **Why store raw data rather than cleaned data?**
+   Cleaning involves judgment calls (spread thresholds, staleness). Keeping the raw quotes lets
+   you change those rules and re-run history. You can't recover quotes you threw away.
+
+---
+
+## 7. Cleaning a chain (`clean.py`)
+
+### Why it works
+A raw chain is full of quotes whose mid isn't a real price. The cleaner drops them, values the
+rest at mid, finds each expiry's forward from put-call parity, keeps one OTM option per strike,
+and computes implied vol and log-moneyness.
+
+**Filters (a quote goes if any is true):**
+- *Zero bid:* nobody will pay for it, so the "mid" is half the ask, which isn't a price.
+- *Crossed (ask < bid):* impossible live. The two sides came from different moments.
+- *Wide (spread/mid > 50%):* the mid could be anywhere in a huge range. Relative, because a
+  5¢ spread is tight on a $10 option and enormous on a 6¢ one. This also removes most
+  penny wings.
+- *Stale (no trade in 5 days):* illiquid contracts tend to have leftover quotes.
+
+**Forward from parity.** Long call + short put at strike `K` pays `S_T − K`, exactly a forward.
+So `C − P = DF·(F − K)`, giving `F = K + (C − P)/DF` at every strike. We take the median over
+the 5 strikes with the smallest `|C − P|` (nearest the money: most liquid, tightest spreads,
+smallest American early-exercise effect). The median means one bad pair can't move it. Only
+`DF` comes from outside (the Treasury curve). The dividend yield and the stock's borrow cost are
+already *in* the market's forward, so we never have to estimate them.
+
+**Why OTM only.** By parity a call and a put at the same strike have the same implied vol,
+but the ITM one is mostly intrinsic with a wider spread, so its vol is noisier. Puts below `F`
+and calls above give one clean vol per strike. The VIX calculation uses the same convention.
+
+**Pricing on the forward.** With `F` known, IV is solved with `S = F` and `q = r`, which makes
+Black-Scholes' `S·e^((r−q)T)` equal `F`. No dividend assumption is needed.
+
+**Time to expiry** is ACT/365 to 4pm New York time on expiry day, in actual seconds. A weekly
+on expiry morning has hours left, not 0 or 1 day, and the time zone handles daylight saving.
+
+### Key formulas
+```
+mid = (bid + ask)/2                      rel_spread = (ask − bid)/mid
+T   = seconds(asof → expiry 16:00 NY) / (365·86400)
+F   = median over 5 nearest strikes of  K + (C_mid − P_mid)·e^(rT)
+OTM: put if K < F, call if K ≥ F         k = ln(K/F)
+Implied dividend yield (if wanted):  q = r − ln(F/S)/T
+```
+
+### Interview questions
+1. **How would you get the forward for SPY options without knowing the dividend?**
+   Put-call parity: at each strike `F = K + (C − P)·e^(rT)`. Use near-the-money strikes and a
+   robust average such as the median. It already includes dividends and borrow costs, and you
+   can back out the implied dividend yield from it.
+2. **Why does parity only hold approximately for SPY?**
+   SPY options are American. The early-exercise right is worth something (more for deep ITM
+   puts, and for calls just before an ex-dividend date), so `C − P` can drift from the European
+   value. Near the money the effect is small, which is one reason to use those strikes.
+3. **Why use OTM options to build a smile?**
+   They're the liquid side with tighter spreads, and their price is all time value, so the vol
+   is well determined. The ITM option at the same strike should give the same vol by parity, but
+   it is noisier.
+4. **What does a crossed or locked market mean?**
+   Crossed (bid > ask) would be a free arbitrage, so in data it means stale or unsynchronized
+   quotes. Locked (bid = ask) can happen briefly on fast moves. We drop crossed quotes and keep
+   locked ones.
+5. **If the wide-spread threshold is too strict or too loose, what happens?**
+   Too strict and you lose the wings, so the surface fit in M3 has nothing to anchor the tails.
+   Too loose and penny options with meaningless mids put noise in the wings. The 50% default is
+   a judgment call, which is why it's a parameter and raw data is stored.
+
+---
+
+## 8. Snapshots (`store.py`)
+
+### Why it works
+Each day's raw chain is saved as one Parquet file, `data/snapshots/{TICKER}/{YYYY-MM-DD}.parquet`
+(the New York trading date, so a late-evening fetch still files under that day). The rate
+curve fetched at the same moment goes into the file's metadata as a small JSON note, so one
+file holds everything needed to rebuild the day's cleaned chain and, later, its surface. The
+tests check the round trip is exact and that cleaning a reloaded snapshot reproduces the
+original result bit for bit.
+
+**Why Parquet over CSV:** columnar and compressed (smaller, faster), and it keeps types:
+floats are bit-identical and timestamps keep their time zone. CSV turns everything into text.
+
+**Safety details:** saving refuses to overwrite an existing day unless asked
+(`overwrite=True`), and it writes to a temporary file and renames it, so a crash can't leave a
+half-written snapshot. Snapshots are gitignored, since they're regenerable data.
+
+**Command line:** `python -m optdesk.data.fetch SPY` fetches the chain and curve, saves the
+snapshot and prints forward, ATM vol and strike count per expiry.
+
+### Key facts
+```
+Path:      data/snapshots/SPY/2026-10-16.parquet
+Contents:  raw chain (RAW_COLUMNS) + metadata {"version": 1, "rate_curve": {...}}
+Load:      chain, curve = load_snapshot("SPY", "2026-10-16");  clean_chain(chain, curve)
+```
+
+### Interview questions
+1. **Why build your own history of snapshots instead of downloading history later?**
+   Free sources only give *today's* chain; historical option quotes are expensive. Saving a
+   snapshot each day builds a private dataset for backtesting surfaces and hedges.
+2. **Why is a columnar format good for this data?**
+   Analysis usually reads a few columns (strike, mid, iv) across many rows. Columnar files
+   read only those columns and compress well, because each column has similar values.
+3. **What does "reproducible" mean for a data pipeline here?**
+   Same inputs give the same outputs: the raw quotes and the rate curve are stored together,
+   so re-running the cleaner on an old snapshot gives the same forwards and vols, unless you
+   deliberately change a cleaning rule.
+4. **What time-of-day issues matter for snapshots?**
+   Take them during market hours (after hours, bids vanish). Make sure the underlying price and
+   option quotes are from the same moment, and avoid the open and close, when spreads are widest
+   and quotes jump around.
