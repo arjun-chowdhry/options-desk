@@ -323,8 +323,9 @@ Contract:    100 shares per contract (dollar price × 100 = premium paid)
    underlying quote and unbiased between buyer and seller.
 2. **What's the difference between SPY and SPX options?**
    SPY options are American, physically settled in ETF shares, and the ETF pays dividends.
-   SPX options are European, cash-settled, 10× bigger notional, and mostly PM-settled with
-   some AM-settled expiries. SPX has Section 1256 tax treatment. European exercise makes SPX
+   SPX options are European, cash-settled and 10× bigger notional; standard monthlies settle
+   on the opening print (AM), weeklies (SPXW) on the close (PM). SPX also gets Section 1256
+   tax treatment. European exercise makes SPX
    the cleaner input for Black-Scholes and vol surfaces.
 3. **Why do bids show as zero after hours?**
    Market makers pull their quotes when the market closes, so there's no live bid. Data
@@ -336,3 +337,68 @@ Contract:    100 shares per contract (dollar price × 100 = premium paid)
 5. **Why store raw data rather than cleaned data?**
    Cleaning involves judgment calls (spread thresholds, staleness). Keeping the raw quotes lets
    you change those rules and re-run history. You can't recover quotes you threw away.
+
+---
+
+## 7. Cleaning a chain (`clean.py`)
+
+### Why it works
+A raw chain is full of quotes whose mid isn't a real price. The cleaner drops them, values the
+rest at mid, finds each expiry's forward from put-call parity, keeps one OTM option per strike,
+and computes implied vol and log-moneyness.
+
+**Filters (a quote goes if any is true):**
+- *Zero bid:* nobody will pay for it, so the "mid" is half the ask, which isn't a price.
+- *Crossed (ask < bid):* impossible live. The two sides came from different moments.
+- *Wide (spread/mid > 50%):* the mid could be anywhere in a huge range. Relative, because a
+  5¢ spread is tight on a $10 option and enormous on a 6¢ one. This also removes most
+  penny wings.
+- *Stale (no trade in 5 days):* illiquid contracts tend to have leftover quotes.
+
+**Forward from parity.** Long call + short put at strike `K` pays `S_T − K`, exactly a forward.
+So `C − P = DF·(F − K)`, giving `F = K + (C − P)/DF` at every strike. We take the median over
+the 5 strikes with the smallest `|C − P|` (nearest the money: most liquid, tightest spreads,
+smallest American early-exercise effect). The median means one bad pair can't move it. Only
+`DF` comes from outside (the Treasury curve). The dividend yield and the stock's borrow cost are
+already *in* the market's forward, so we never have to estimate them.
+
+**Why OTM only.** By parity a call and a put at the same strike have the same implied vol,
+but the ITM one is mostly intrinsic with a wider spread, so its vol is noisier. Puts below `F`
+and calls above give one clean vol per strike. The VIX calculation uses the same convention.
+
+**Pricing on the forward.** With `F` known, IV is solved with `S = F` and `q = r`, which makes
+Black-Scholes' `S·e^((r−q)T)` equal `F`. No dividend assumption is needed.
+
+**Time to expiry** is ACT/365 to 4pm New York time on expiry day, in actual seconds. A weekly
+on expiry morning has hours left, not 0 or 1 day, and the time zone handles daylight saving.
+
+### Key formulas
+```
+mid = (bid + ask)/2                      rel_spread = (ask − bid)/mid
+T   = seconds(asof → expiry 16:00 NY) / (365·86400)
+F   = median over 5 nearest strikes of  K + (C_mid − P_mid)·e^(rT)
+OTM: put if K < F, call if K ≥ F         k = ln(K/F)
+Implied dividend yield (if wanted):  q = r − ln(F/S)/T
+```
+
+### Interview questions
+1. **How would you get the forward for SPY options without knowing the dividend?**
+   Put-call parity: at each strike `F = K + (C − P)·e^(rT)`. Use near-the-money strikes and a
+   robust average such as the median. It already includes dividends and borrow costs, and you
+   can back out the implied dividend yield from it.
+2. **Why does parity only hold approximately for SPY?**
+   SPY options are American. The early-exercise right is worth something (more for deep ITM
+   puts, and for calls just before an ex-dividend date), so `C − P` can drift from the European
+   value. Near the money the effect is small, which is one reason to use those strikes.
+3. **Why use OTM options to build a smile?**
+   They're the liquid side with tighter spreads, and their price is all time value, so the vol
+   is well determined. The ITM option at the same strike should give the same vol by parity, but
+   it is noisier.
+4. **What does a crossed or locked market mean?**
+   Crossed (bid > ask) would be a free arbitrage, so in data it means stale or unsynchronized
+   quotes. Locked (bid = ask) can happen briefly on fast moves. We drop crossed quotes and keep
+   locked ones.
+5. **If the wide-spread threshold is too strict or too loose, what happens?**
+   Too strict and you lose the wings, so the surface fit in M3 has nothing to anchor the tails.
+   Too loose and penny options with meaningless mids put noise in the wings. The 50% default is
+   a judgment call, which is why it's a parameter and raw data is stored.
