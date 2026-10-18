@@ -221,3 +221,6 @@ __marimo__/
 
 # options-desk: daily market data snapshots (regenerable, don't commit)
 data/snapshots/
+
+# options-desk: generated surface plots (python -m optdesk.surface.plot)
+data/plots/

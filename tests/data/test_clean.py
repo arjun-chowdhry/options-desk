@@ -3,6 +3,10 @@
 The saved chain is generated from Black-Scholes with a known forward and vol for every contract
 (see ``tests/fixtures/make_spy_fixture.py``), so the cleaner must recover those exactly. Its
 planted bad quotes must be flagged, and nothing else.
+
+The American-option tests use the synthetic SPY market from ``optdesk.surface.synthetic``:
+quotes priced with early exercise on a CRR tree from a known vol surface. De-Americanizing
+must recover that surface's vols and the true forward; skipping it must show the known bias.
 """
 
 import warnings
@@ -16,12 +20,17 @@ from hypothesis import strategies as st
 from optdesk.data.clean import (
     CLEAN_COLUMNS,
     clean_chain,
+    european_equivalent,
     parity_forward,
     quote_flags,
     year_fraction,
 )
 from optdesk.data.rates import RateCurve
+from optdesk.pricing.binomial import binomial_price
 from optdesk.pricing.black_scholes import bs_price, forward_price
+from optdesk.pricing.implied_vol import implied_vol
+from optdesk.surface.svi import SVIParams
+from optdesk.surface.synthetic import synthetic_chain
 
 ASOF = pd.Timestamp("2026-10-16 19:45", tz="UTC")  # 3:45pm New York (EDT, UTC-4)
 
@@ -260,3 +269,75 @@ def test_after_hours_chain_warns_and_returns_empty(raw_chain, curve):
         out = clean_chain(closed, curve)
     assert out.empty
     assert list(out.columns) == CLEAN_COLUMNS
+
+
+# --- American options: de-Americanizing --------------------------------------------------------
+
+
+def test_european_equivalent_recovers_the_vol():
+    """American prices at a known vol -> strip the premium -> Black-Scholes gives that vol back."""
+    S, r, q = 580.0, 0.04, 0.013
+    T = np.array([0.25, 0.25, 1.0, 1.0, 1.0])
+    K = np.array([560.0, 600.0, 450.0, 580.0, 620.0])
+    sigma = np.array([0.19, 0.15, 0.26, 0.18, 0.16])
+    call = np.array([False, True, False, False, True])
+    american = sum(binomial_price(S, K, T, r, sigma, q, call, steps=n) for n in (1500, 1501)) / 2
+
+    european, premium = european_equivalent(american, S, K, T, r, q, call)
+    np.testing.assert_allclose(implied_vol(european, S, K, T, r, q, call), sigma, atol=1e-4)
+    np.testing.assert_allclose(european + premium, american, rtol=1e-14)
+    # Without the correction, the 1-year near-the-money put's vol is off by over 0.3 points.
+    naive = implied_vol(american, S, K, T, r, q, call)
+    assert naive[3] - sigma[3] > 0.003
+
+
+@pytest.fixture(scope="module")
+def american_market():
+    """Exact (noise-free, unrounded) American quotes from the synthetic SPY surface."""
+    return synthetic_chain(american=True, noise=0.0, tick=None)
+
+
+@pytest.fixture(scope="module")
+def american_clean(american_market):
+    return clean_chain(american_market.raw, american_market.curve, american=True)
+
+
+def _true_vols(clean, truth):
+    """The surface's vol at each quote's strike, using the true forward."""
+    out = np.empty(len(clean))
+    for expiry, row in truth.set_index("expiry").iterrows():
+        sel = (clean["expiry"] == expiry).to_numpy()
+        k_true = np.log(clean.loc[sel, "strike"] / row["forward"])
+        out[sel] = SVIParams.from_mapping(row).implied_vol(k_true, row["T"])
+    return out
+
+
+def test_american_cleaning_recovers_forward_and_vols(american_market, american_clean):
+    truth = american_market.truth.set_index("expiry")
+    forwards = american_clean.groupby("expiry")["forward"].first()
+    np.testing.assert_allclose(forwards, truth.loc[forwards.index, "forward"], rtol=5e-5)  # 0.5bp
+    error = np.abs(american_clean["iv"] - _true_vols(american_clean, american_market.truth))
+    # The floor here is the *generator's* 400-step tree (about a cent on a $580 stock, so
+    # ~0.02 vol points on low-vega quotes); de-Americanizing itself adds ~0.005.
+    assert error.max() < 5e-4  # 0.05 vol points, every quote, every expiry
+    assert error.median() < 1e-4  # typical quote: 0.01 vol points
+
+
+def test_ignoring_early_exercise_shows_the_bias(american_market, american_clean):
+    """Cleaning American quotes as European: forward too low, put vols too high, worse with T."""
+    naive = clean_chain(american_market.raw, american_market.curve, american=False)
+    truth = american_market.truth.set_index("expiry")
+    gap_bp = 1e4 * (naive.groupby("expiry")["forward"].first() / truth["forward"] - 1)
+    assert gap_bp.iloc[-1] < -20  # 14-month expiry: forward more than 20bp low
+    assert gap_bp.iloc[0] > gap_bp.iloc[-1]  # bias grows with maturity
+    long_dated = naive["expiry"] == truth.index[-1]
+    error = naive["iv"] - _true_vols(naive, american_market.truth)
+    assert error[long_dated].max() > 0.003  # some long-dated vol off by > 0.3 points
+
+
+def test_eep_column(american_clean, raw_chain, curve):
+    assert (american_clean["eep"] >= 0).all()
+    puts = american_clean["option_type"] == "put"
+    assert american_clean.loc[puts, "eep"].max() > 0.5  # long-dated puts: tens of cents+
+    assert american_clean.loc[~puts, "eep"].max() < 0.01  # OTM calls: essentially none
+    assert (clean_chain(raw_chain, curve)["eep"] == 0).all()  # European: nothing removed

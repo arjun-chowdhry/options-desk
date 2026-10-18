@@ -74,3 +74,48 @@ and true vol of every contract (to 1e-8). It also contains planted bad quotes th
 flagged. Plus: hand-computed T-bill and bond-yield conversions, year fractions across a
 daylight-saving change, a Hypothesis test that parity recovers `S·e^((r−q)T)`, robustness to
 a bad quote, and exact Parquet round trips.
+
+## Volatility surface (`optdesk.surface`)
+
+| Module | What it does | Key design choice |
+| --- | --- | --- |
+| `svi.py` | Raw SVI smile per expiry; robust fit; `fit_chain` fits every expiry of a cleaned chain | Vega-weighted vol residuals; grid over `(m, σ)` with exact linear solves for the other three parameters, then bounded least squares (avoids local minima) |
+| `arbitrage.py` | Butterfly check (Gatheral's `g(k) ≥ 0`, Lee's wing bound) and calendar check (`w` non-decreasing in `T` at fixed `k`) | Reports *where* and *how badly* a surface fails, on a grid well beyond the quotes |
+| `plot.py` | Plotly 3D surface and per-expiry smile panels; `python -m optdesk.surface.plot` | Surface in ATM standard deviations so every expiry is comparable; nothing drawn beyond the quoted strikes |
+| `synthetic.py` | SPY-like American option chain from a known, arbitrage-free SSVI surface | An answer key for the fit: noise, penny ticks and early exercise, through the real cleaner |
+
+**American exercise.** SPY options are American, so their prices include an early-exercise
+premium that biases Black-Scholes vols up (~0.6 vol points on a 1-year near-the-money put) and
+the parity forward down (~38bp at 1 year). `clean_chain(..., american=True)` strips the
+premium on a CRR tree, iterating with the forward, so the surface is fitted to
+European-equivalent vols. The command-line tools default to American; pass `--european` for
+index options such as SPX.
+
+```powershell
+python -m optdesk.surface.plot                                # synthetic market -> data/plots/*.html
+python -m optdesk.surface.plot --ticker SPY --date 2026-10-19 # a saved snapshot
+```
+
+```python
+from optdesk.data.clean import clean_chain
+from optdesk.surface.arbitrage import check_surface
+from optdesk.surface.plot import smile_figure, surface_figure
+from optdesk.surface.svi import fit_chain
+from optdesk.surface.synthetic import synthetic_chain
+
+market = synthetic_chain()  # or: chain, curve = load_snapshot("SPY", "2026-10-19")
+clean = clean_chain(market.raw, market.curve, american=True)
+fits = check_surface(fit_chain(clean))  # a, b, rho, m, sigma, rmse + arbitrage flags per expiry
+surface_figure(fits, clean).show()
+```
+
+How it's tested: exact recovery of known SVI parameters (to ~1e-8) for equity, FX and
+commodity-shaped smiles and through the full clean-and-fit pipeline; with realistic noise and
+American pricing, fitted smiles within 0.1 vol points of the truth on every expiry, across
+several noise seeds; SVI derivatives against finite differences; Gatheral's density formula
+against Breeden-Litzenberger finite differences of Black-Scholes prices; Axel Vogt's slice
+flagged for butterfly arbitrage in the right `k` range; hand-built crossing slices flagged
+where they cross; the synthetic SSVI surface passing both checks; de-Americanizing recovering
+the true forward (0.5bp) and vols, and skipping it showing the known bias; early-exercise
+premium of zero where theory says so (Merton's call, puts at zero rates) and matching a
+4,000-step reference elsewhere.
