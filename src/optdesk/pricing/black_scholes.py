@@ -27,11 +27,15 @@ Conventions: ``T`` in years (ACT/365), ``r`` and ``q`` continuously compounded a
 
 from __future__ import annotations
 
+from typing import NamedTuple
+
 import numpy as np
 from numpy.typing import ArrayLike, NDArray
 from scipy.special import ndtr  # standard normal CDF; faster than scipy.stats.norm.cdf
 
 __all__ = ["bs_price", "d1_d2", "forward_price"]
+
+_INV_SQRT_2PI = 1.0 / np.sqrt(2.0 * np.pi)
 
 
 def _validate(S: NDArray, K: NDArray, T: NDArray, sigma: NDArray) -> None:
@@ -80,6 +84,83 @@ def d1_d2(
     return d1, d2
 
 
+class _BSTerms(NamedTuple):
+    """Intermediate quantities shared by ``bs_price`` and the Greeks (internal)."""
+
+    S: NDArray
+    K: NDArray
+    T: NDArray
+    r: NDArray
+    sigma: NDArray
+    q: NDArray
+    F: NDArray  # forward
+    disc_r: NDArray  # e^{-rT}, discount factor
+    disc_q: NDArray  # e^{-qT}, dividend discount factor
+    sqrt_t: NDArray
+    vol_sqrt_t: NDArray
+    d1: NDArray
+    d2: NDArray
+    cdf_d1: NDArray  # N(d1)
+    cdf_d2: NDArray  # N(d2)
+    cdf_neg_d1: NDArray  # N(-d1), kept separately: 1 - N(d1) loses precision deep in the money
+    cdf_neg_d2: NDArray  # N(-d2)
+    pdf_d1: NDArray  # n(d1), standard normal density
+    degenerate: NDArray  # sigma * sqrt(T) == 0: no uncertainty left
+    at_kink: NDArray  # degenerate and F == K: payoff kink, where Greeks don't exist
+
+
+def _bs_terms(
+    S: ArrayLike, K: ArrayLike, T: ArrayLike, r: ArrayLike, sigma: ArrayLike, q: ArrayLike
+) -> _BSTerms:
+    """Validate inputs and compute everything the price and Greek formulas need.
+
+    When ``sigma * sqrt(T) == 0`` the terminal asset price is the forward for sure, so
+    ``d1`` and ``d2`` are effectively +infinity (if ``F > K``) or -infinity (if ``F < K``).
+    We plug in the limits directly: ``N(d) = 1`` or ``0`` and ``n(d1) = 0``. With those, the
+    ordinary formulas give the correct no-uncertainty price and Greeks with no special-casing
+    downstream. ``d1``/``d2`` themselves hold finite placeholders there; every formula that
+    uses them multiplies by ``n(d1) = 0``.
+    """
+    S, K, T, r, sigma, q = (np.asarray(x, dtype=float) for x in (S, K, T, r, sigma, q))
+    _validate(S, K, T, sigma)
+
+    F = forward_price(S, T, r, q)
+    sqrt_t = np.sqrt(T)
+    vol_sqrt_t = sigma * sqrt_t
+    degenerate = vol_sqrt_t == 0
+
+    # d1 in forward form: ln(F/K) / (sigma sqrt T) + (sigma sqrt T) / 2, same as d1_d2() gives.
+    # Divide by 1 where sigma*sqrt(T) is zero; those entries are replaced by limits below.
+    safe_vst = np.where(degenerate, 1.0, vol_sqrt_t)
+    d1 = np.log(F / K) / safe_vst + 0.5 * vol_sqrt_t
+    d2 = d1 - vol_sqrt_t
+
+    # Limit of N(d) as sigma*sqrt(T) -> 0: 1 in the money, 0 out of it, 1/2 exactly at the money.
+    itm = (F > K) + 0.5 * (F == K)
+    return _BSTerms(
+        S=S,
+        K=K,
+        T=T,
+        r=r,
+        sigma=sigma,
+        q=q,
+        F=F,
+        disc_r=np.exp(-r * T),
+        disc_q=np.exp(-q * T),
+        sqrt_t=sqrt_t,
+        vol_sqrt_t=vol_sqrt_t,
+        d1=d1,
+        d2=d2,
+        cdf_d1=np.where(degenerate, itm, ndtr(d1)),
+        cdf_d2=np.where(degenerate, itm, ndtr(d2)),
+        cdf_neg_d1=np.where(degenerate, 1.0 - itm, ndtr(-d1)),
+        cdf_neg_d2=np.where(degenerate, 1.0 - itm, ndtr(-d2)),
+        pdf_d1=np.where(degenerate, 0.0, _INV_SQRT_2PI * np.exp(-0.5 * d1**2)),
+        degenerate=degenerate,
+        at_kink=degenerate & (F == K),
+    )
+
+
 def bs_price(
     S: ArrayLike,
     K: ArrayLike,
@@ -115,26 +196,10 @@ def bs_price(
     The put is computed from its own formula, not from put-call parity, so the parity test in
     the test suite is a genuine check of the implementation.
     """
-    S, K, T, r, sigma, q = (np.asarray(x, dtype=float) for x in (S, K, T, r, sigma, q))
+    t = _bs_terms(S, K, T, r, sigma, q)
     call = np.asarray(call, dtype=bool)
-    _validate(S, K, T, sigma)
-
-    F = forward_price(S, T, r, q)
-    DF = np.exp(-r * T)
-    vol_sqrt_t = sigma * np.sqrt(T)
-    degenerate = vol_sqrt_t == 0
-
-    # d1 in forward form: ln(F/K) / (sigma sqrt T) + (sigma sqrt T) / 2, same as d1_d2() gives.
-    # Divide by 1 where sigma*sqrt(T) is zero; those entries are overwritten with the
-    # no-uncertainty limit below, so the placeholder value never escapes.
-    safe_vst = np.where(degenerate, 1.0, vol_sqrt_t)
-    d1 = np.log(F / K) / safe_vst + 0.5 * vol_sqrt_t
-    d2 = d1 - vol_sqrt_t
-
-    call_px = DF * (F * ndtr(d1) - K * ndtr(d2))
-    put_px = DF * (K * ndtr(-d2) - F * ndtr(-d1))
-
-    call_px = np.where(degenerate, DF * np.maximum(F - K, 0.0), call_px)
-    put_px = np.where(degenerate, DF * np.maximum(K - F, 0.0), put_px)
-
+    # In the zero-vol limit N(d1) = N(d2) = 1 or 0, which turns these into DF * max(F - K, 0)
+    # and DF * max(K - F, 0); see _bs_terms.
+    call_px = t.disc_r * (t.F * t.cdf_d1 - t.K * t.cdf_d2)
+    put_px = t.disc_r * (t.K * t.cdf_neg_d2 - t.F * t.cdf_neg_d1)
     return np.where(call, call_px, put_px)[()]
