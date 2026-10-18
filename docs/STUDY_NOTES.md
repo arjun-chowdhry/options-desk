@@ -161,3 +161,67 @@ Brenner-Subrahmanyam ATM approximation:  σ ≈ √(2π/T) · C / S
 5. **Quick ATM vol from a price, no calculator?**
    `σ ≈ 2.5 · C / (S √T)` (since √(2π) ≈ 2.5). A 1-year ATM call on a $100 stock at $8 is
    about 20 vol.
+
+---
+
+## 4. CRR binomial tree (`binomial.py`)
+
+### Why it works
+Chop time to expiry into `N` steps. In each step the stock goes up by `u` or down by `d`. In
+a one-step world, an option can be replicated exactly with stock and cash, so its price is a
+discounted average of its two possible values with weights `p` and `1 − p`. Those weights are
+the risk-neutral probabilities: the ones that make the stock earn `r − q` on average. Chain
+those one-step problems backward from expiry and you price any payoff.
+
+**American exercise** fits in naturally: at every node the holder chooses the better of
+*hold* (the discounted average of the children) and *exercise now* (intrinsic value). That
+`max` is the whole difference between the American and European tree.
+
+**Why CRR:** `u = e^(σ√dt)`, `d = 1/u`. Since `u·d = 1` the tree recombines, so up-then-down
+lands where down-then-up does. That gives `i + 1` nodes after `i` steps, not `2^i`, so a 2,000-step
+tree is cheap. The grid is symmetric around today's spot, and the drift only enters through
+`p`. As `N → ∞` the tree converges to Black-Scholes, with error O(1/N) that oscillates between
+odd and even `N` (averaging `N` and `N + 1` damps it).
+
+**When early exercise matters:**
+- **American put:** deep in the money with `r > 0`, exercising now gets you `K` today to earn
+  interest, which can beat the remaining optionality.
+- **American call, no dividends:** never exercise early (Merton). You'd pay `K` sooner and throw
+  away time value, so it's worth exactly the European.
+- **American call with dividends:** exercising just before a big dividend can pay, because the
+  holder of the stock gets the dividend and the option holder doesn't.
+
+### Key formulas
+```
+dt = T/N     u = e^(σ√dt)     d = 1/u
+p  = (e^((r−q)dt) − d) / (u − d)          must lie in [0, 1]
+node (i, j) price:   S · u^(2j − i)        (j up-moves out of i steps)
+European:  V(i, j) = e^(−r dt) [p V(i+1, j+1) + (1 − p) V(i+1, j)]
+American:  V(i, j) = max( that,  intrinsic at S·u^(2j−i) )
+Error vs Black-Scholes (European):  O(1/N), oscillating
+```
+
+### Interview questions
+1. **Why use a binomial tree when we have Black-Scholes?**
+   Black-Scholes is for European exercise only. American options (most single-stock listed
+   options) can be exercised early, which has no closed form. The tree checks the exercise
+   decision at every node.
+2. **When should you exercise an American put early?**
+   When it's deep enough in the money that getting `K` now and earning interest on it is
+   worth more than the remaining time value. That's more likely with higher rates and lower
+   vol. With `r = 0` (and no dividends) it's never optimal.
+3. **Why is an American call on a non-dividend stock worth the same as the European?**
+   A call is always worth at least `S − K·e^(−rT)`, which is more than the `S − K` you'd get
+   by exercising. Selling the call always beats exercising it, so the early-exercise right is
+   worthless.
+4. **What does `p` represent, and what if it's outside [0, 1]?**
+   The risk-neutral up-probability, chosen so the stock's expected growth per step is
+   `e^((r−q)dt)`. It's not a real-world probability. If it's outside [0, 1] the steps are too
+   coarse (the drift per step exceeds the vol per step) and the tree admits arbitrage. Use
+   more steps.
+5. **How fast does the tree converge, and how can you speed it up?**
+   Error is O(1/N), with an odd/even oscillation because the strike falls at different places
+   relative to the nodes. Averaging `N` and `N + 1` steps helps, as does Richardson
+   extrapolation or replacing the last step with Black-Scholes values (the BBS method).
+   Doubling `N` roughly halves the error but quadruples the work, since an `N`-step tree has
+   about `N²/2` nodes.
