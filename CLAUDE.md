@@ -58,7 +58,7 @@ data/snapshots/   gitignored, {TICKER}/{YYYY-MM-DD}.parquet
   implied vol (Newton with Brent fallback, NaN outside no-arb bounds); CRR binomial with
   American exercise. Tests: Hull values, put-call parity (Hypothesis), every Greek vs finite
   difference, price bounds, IV round-trip, binomial converges to BS, American put >= European.
-- [ ] **M2 Data:** fetch chain (yfinance), clean (drop zero bids, crossed/wide/stale quotes;
+- [x] **M2 Data:** fetch chain (yfinance), clean (drop zero bids, crossed/wide/stale quotes;
   mid; T; forward from parity; IV), Parquet snapshots. Tests use a fixture chain plus a mocked
   yfinance.
 - [ ] **M3 Surface:** raw SVI fit per expiry with parameter bounds; butterfly check (Gatheral

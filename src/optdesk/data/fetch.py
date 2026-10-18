@@ -19,19 +19,28 @@ yfinance gives a separate calls table and puts table per expiry. We stack them a
 snake_case. One flat table is easy to filter, group by expiry, and save as a single Parquet
 file. We keep the raw quotes untouched (no filtering here) so that cleaning choices can be
 changed and re-run on old snapshots.
+
+Command line
+------------
+``python -m optdesk.data.fetch SPY`` downloads today's chain and rate curve, saves them as a
+snapshot (see ``store.py``) and prints a one-line summary per expiry from the cleaned chain.
 """
 
 from __future__ import annotations
 
+import argparse
 import warnings
+from pathlib import Path
 
 import numpy as np
 import pandas as pd
 import yfinance as yf
 
+from optdesk.data.clean import clean_chain
 from optdesk.data.rates import TREASURY_TENORS, RateCurve, treasury_curve
+from optdesk.data.store import DEFAULT_ROOT, save_snapshot
 
-__all__ = ["RAW_COLUMNS", "fetch_chain", "fetch_rate_curve", "fetch_treasury_quotes"]
+__all__ = ["RAW_COLUMNS", "fetch_chain", "fetch_rate_curve", "fetch_treasury_quotes", "main"]
 
 # yfinance column -> our column
 _RENAME = {
@@ -123,3 +132,32 @@ def fetch_treasury_quotes() -> dict[str, float]:
 def fetch_rate_curve() -> RateCurve:
     """Download Treasury yields and convert them to a continuous zero-rate curve."""
     return treasury_curve(fetch_treasury_quotes())
+
+
+def main(argv: list[str] | None = None) -> int:
+    """Fetch a chain and rate curve, save the snapshot, and print a cleaned summary."""
+    parser = argparse.ArgumentParser(description="Download and save an option-chain snapshot.")
+    parser.add_argument("ticker", help="underlying symbol, e.g. SPY")
+    parser.add_argument("--max-expiries", type=int, default=None, help="nearest N expiries only")
+    parser.add_argument("--root", type=Path, default=DEFAULT_ROOT, help="snapshot folder")
+    parser.add_argument("--overwrite", action="store_true", help="replace today's snapshot")
+    args = parser.parse_args(argv)
+
+    chain = fetch_chain(args.ticker, args.max_expiries)
+    curve = fetch_rate_curve()
+    path = save_snapshot(chain, curve, args.root, overwrite=args.overwrite)
+    print(f"saved {len(chain)} raw quotes to {path}")
+
+    clean = clean_chain(chain, curve)
+    print(f"{len(clean)} quotes survive cleaning")
+    for expiry, group in clean.groupby("expiry"):
+        atm = group.iloc[(group["k"].abs()).argmin()]
+        print(
+            f"  {expiry:%Y-%m-%d}  T={group['T'].iloc[0]:.3f}  F={atm['forward']:.2f}  "
+            f"ATM vol={atm['iv']:.1%}  ({len(group)} strikes)"
+        )
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

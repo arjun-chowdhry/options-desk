@@ -402,3 +402,48 @@ Implied dividend yield (if wanted):  q = r − ln(F/S)/T
    Too strict and you lose the wings, so the surface fit in M3 has nothing to anchor the tails.
    Too loose and penny options with meaningless mids put noise in the wings. The 50% default is
    a judgment call, which is why it's a parameter and raw data is stored.
+
+---
+
+## 8. Snapshots (`store.py`)
+
+### Why it works
+Each day's raw chain is saved as one Parquet file, `data/snapshots/{TICKER}/{YYYY-MM-DD}.parquet`
+(the New York trading date, so a late-evening fetch still files under that day). The rate
+curve fetched at the same moment goes into the file's metadata as a small JSON note, so one
+file holds everything needed to rebuild the day's cleaned chain and, later, its surface. The
+tests check the round trip is exact and that cleaning a reloaded snapshot reproduces the
+original result bit for bit.
+
+**Why Parquet over CSV:** columnar and compressed (smaller, faster), and it keeps types:
+floats are bit-identical and timestamps keep their time zone. CSV turns everything into text.
+
+**Safety details:** saving refuses to overwrite an existing day unless asked
+(`overwrite=True`), and it writes to a temporary file and renames it, so a crash can't leave a
+half-written snapshot. Snapshots are gitignored, since they're regenerable data.
+
+**Command line:** `python -m optdesk.data.fetch SPY` fetches the chain and curve, saves the
+snapshot and prints forward, ATM vol and strike count per expiry.
+
+### Key facts
+```
+Path:      data/snapshots/SPY/2026-10-16.parquet
+Contents:  raw chain (RAW_COLUMNS) + metadata {"version": 1, "rate_curve": {...}}
+Load:      chain, curve = load_snapshot("SPY", "2026-10-16");  clean_chain(chain, curve)
+```
+
+### Interview questions
+1. **Why build your own history of snapshots instead of downloading history later?**
+   Free sources only give *today's* chain; historical option quotes are expensive. Saving a
+   snapshot each day builds a private dataset for backtesting surfaces and hedges.
+2. **Why is a columnar format good for this data?**
+   Analysis usually reads a few columns (strike, mid, iv) across many rows. Columnar files
+   read only those columns and compress well, because each column has similar values.
+3. **What does "reproducible" mean for a data pipeline here?**
+   Same inputs give the same outputs: the raw quotes and the rate curve are stored together,
+   so re-running the cleaner on an old snapshot gives the same forwards and vols, unless you
+   deliberately change a cleaning rule.
+4. **What time-of-day issues matter for snapshots?**
+   Take them during market hours (after hours, bids vanish). Make sure the underlying price and
+   option quotes are from the same moment, and avoid the open and close, when spreads are widest
+   and quotes jump around.
