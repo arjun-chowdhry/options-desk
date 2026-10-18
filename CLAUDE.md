@@ -75,13 +75,10 @@ data/plots/       gitignored, HTML output of python -m optdesk.surface.plot
   - [x] Code, tests, README section, study notes (sections 9-12) (merged to main).
   - [ ] Fit Monday's live snapshot: `python -m optdesk.surface.plot --ticker SPY --date
     2026-10-19`. Check RMSE is small, the arbitrage flags, and that the smiles look sensible.
-- [ ] **M4a Hedging sim** (complete on branch `m4a-hedging`, awaiting review before merge):
-  GBM (exact) and Heston (full-truncation Euler) paths; delta-hedge P&L with transaction
-  costs. Tests: theoretical moments, martingale property, P&L std shrinks as
-  1/sqrt(rebalances), costs reduce P&L, wrong-vol P&L sign.
-  - [x] Code, tests, README section, study notes (sections 13-15), charts in `docs/images/`
-    (`python -m optdesk.sim.plot`).
-  - [ ] Arjun reviews the validation results, then merge to main.
+- [x] **M4a Hedging sim:** GBM (exact) and Heston (full-truncation Euler) paths; delta-hedge
+  P&L with transaction costs. Tests: theoretical moments, martingale property, P&L std shrinks
+  as 1/sqrt(rebalances), costs reduce P&L, wrong-vol P&L sign. README section, study notes
+  (sections 13-15), charts in `docs/images/` (`python -m optdesk.sim.plot`). Merged to main.
 - [ ] **M4b Market maker:** Avellaneda-Stoikov reservation price and spread, Poisson fills,
   inventory limits. Tests: symmetric quotes at zero inventory, skew direction, spread grows with
   gamma and sigma, reproducibility, skewing reduces inventory variance.
