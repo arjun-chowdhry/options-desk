@@ -10,6 +10,9 @@ The steps, in order
 4. **Keep only out-of-the-money options**: puts struck below the forward, calls at or above it.
 5. **Implied vol and log-moneyness** ``k = ln(K / F)``, the coordinates the M3 surface uses.
 
+For American options (``american=True``), steps 3 and 5 first remove the early-exercise
+premium; see "American options" below.
+
 Why these filters
 -----------------
 - *Zero bid:* nobody will pay anything for the option, so its "mid" is half the ask, an
@@ -36,9 +39,35 @@ smallest (closest to the money, where both options are liquid and their spreads 
 use the median, so one bad quote can't drag the answer. Only the discount factor
 ``DF = e^{-rT}`` comes from outside, from the Treasury curve.
 
-Caveat: SPY and single-stock options are American, and parity is exact only for European
-options. Near the money the early-exercise premium is tiny, so the error is small. That is
-another reason to use only near-the-money strikes.
+American options (SPY, single stocks): de-Americanizing
+-------------------------------------------------------
+Black-Scholes and put-call parity are for European options. SPY options are American, so
+each price includes an *early-exercise premium* (EEP). Inverting an American price with
+Black-Scholes as if it were European overstates the vol, and the premium on the puts also
+drags the parity forward down. Measured on a SPY-like setup (r = 4%, q = 1.3%), the vol error
+on a near-the-money OTM put is ~0.04 vol points at 1 month, ~0.14 at 3 months and ~0.6 at 1
+year, and the forward comes out ~6bp low at 3 months and ~38bp low at 1 year. Short-dated and
+OTM call quotes are barely affected.
+
+With ``american=True`` we remove the premium before anything else uses the prices:
+
+1. Price each quote's premium on a CRR tree (American minus European, same tree), at the
+   vol the quote implies, and subtract it: ``European-equivalent = mid - EEP``. The premium
+   depends on the vol, which depends on the premium, so we repeat twice (it settles fast
+   because the premium is small and barely moves with vol).
+2. The tree needs spot and a dividend yield, and the forward needs de-Americanized prices,
+   so the forward is found by iterating too: forward from parity -> implied dividend yield
+   ``q = r - ln(F/S)/T`` -> de-Americanize the call/put pairs -> forward from parity again.
+3. The OTM quotes are de-Americanized with the final forward, then inverted with
+   Black-Scholes as before.
+
+Why this method and not a tree-implied vol: inverting the tree directly needs a root search
+of full American trees for every quote. Subtracting the premium needs a few trees in total
+(batched across every quote at once) and reuses the fast Black-Scholes solver. The result is
+a *European-equivalent* vol, which is the right input for SVI and for the arbitrage checks
+(both are European theory). Remaining approximation:
+SPY pays discrete quarterly dividends while the tree uses a continuous yield. That matters
+for calls just before an ex-dividend date, but those are ITM calls, which we don't use.
 
 Why keep only out-of-the-money options
 --------------------------------------
@@ -55,16 +84,27 @@ import warnings
 
 import numpy as np
 import pandas as pd
-from numpy.typing import ArrayLike
+from numpy.typing import ArrayLike, NDArray
 
 from optdesk.data.rates import RateCurve
+from optdesk.pricing.binomial import early_exercise_premium
 from optdesk.pricing.implied_vol import implied_vol
 
-__all__ = ["CLEAN_COLUMNS", "clean_chain", "parity_forward", "quote_flags", "year_fraction"]
+__all__ = [
+    "CLEAN_COLUMNS",
+    "clean_chain",
+    "european_equivalent",
+    "parity_forward",
+    "quote_flags",
+    "year_fraction",
+]
 
 EXPIRY_HOUR = 16  # equity options stop trading at the 4pm close in New York
 EXPIRY_TZ = "America/New_York"
 SECONDS_PER_YEAR = 365 * 24 * 3600  # ACT/365
+EEP_ITERATIONS = 2  # premium <-> vol fixed point (it settles fast; the premium is small)
+FORWARD_ITERATIONS = 3  # forward <-> dividend yield fixed point, American chains only
+TREE_STEPS = 200  # premium good to ~1 cent on SPY (see pricing.binomial.early_exercise_premium)
 
 CLEAN_COLUMNS = [
     "ticker",
@@ -75,6 +115,7 @@ CLEAN_COLUMNS = [
     "bid",
     "ask",
     "mid",
+    "eep",  # early-exercise premium removed from mid (0 for European options)
     "rel_spread",  # (ask - bid) / mid
     "T",  # years to expiry, ACT/365
     "r",  # continuous risk-free rate for T
@@ -152,10 +193,40 @@ def parity_forward(
     return float(np.median(strikes[nearest] + diff[nearest] / discount))
 
 
+def european_equivalent(
+    price: ArrayLike,
+    S: ArrayLike,
+    K: ArrayLike,
+    T: ArrayLike,
+    r: ArrayLike,
+    q: ArrayLike,
+    call: ArrayLike,
+    *,
+    steps: int = TREE_STEPS,
+) -> tuple[NDArray, NDArray]:
+    """Strip the early-exercise premium from American option prices.
+
+    Returns ``(european_price, premium)``. The premium is priced on a CRR tree at the vol
+    the quote implies, which itself depends on the premium, so we alternate the two
+    ``EEP_ITERATIONS`` times. Quotes with no implied vol keep their price (premium 0); the
+    cleaner drops them later anyway.
+    """
+    price = np.asarray(price, dtype=float)
+    premium = np.zeros_like(price)
+    for _ in range(EEP_ITERATIONS):
+        vol = implied_vol(price - premium, S, K, T, r, q, call)
+        ok = np.isfinite(vol) & (vol > 0)
+        premium = np.where(
+            ok, early_exercise_premium(S, K, T, r, np.where(ok, vol, 0.2), q, call, steps=steps), 0
+        )
+    return price - premium, premium
+
+
 def clean_chain(
     raw: pd.DataFrame,
     curve: RateCurve,
     *,
+    american: bool = False,
     max_rel_spread: float = 0.5,
     max_stale_days: float | None = 5.0,
     n_parity_strikes: int = 5,
@@ -166,6 +237,9 @@ def clean_chain(
     ----------
     raw : the long table from ``fetch.fetch_chain`` (or a loaded snapshot).
     curve : risk-free rate curve for discounting (e.g. ``fetch.fetch_rate_curve()``).
+    american : the options are American (SPY, single stocks). Strips the early-exercise
+        premium before computing forwards and vols (see the module notes). Needs the
+        ``spot`` column. Leave False for European options (SPX) and the European fixture.
     max_rel_spread, max_stale_days : quote filters, see ``quote_flags``.
     n_parity_strikes : how many near-the-money strikes to use for each forward.
 
@@ -201,9 +275,21 @@ def clean_chain(
             warnings.warn(f"no call/put pair for {expiry:%Y-%m-%d}; dropping expiry", stacklevel=2)
             continue
         T, r = group["T"].iloc[0], group["r"].iloc[0]
-        forwards[expiry] = parity_forward(
-            pairs.index, pairs["call"], pairs["put"], np.exp(-r * T), n_parity_strikes
-        )
+        K, calls, puts = pairs.index.to_numpy(), pairs["call"], pairs["put"]
+        F = parity_forward(K, calls, puts, np.exp(-r * T), n_parity_strikes)
+        if american:
+            # Forward and premium depend on each other: alternate until they settle.
+            S = group["spot"].iloc[0]
+            # Parity only uses strikes near the money; don't price trees for the rest.
+            near = np.argsort(np.abs(calls - puts).to_numpy(), kind="stable")
+            near = near[: 2 * n_parity_strikes]
+            K, calls, puts = K[near], calls.iloc[near], puts.iloc[near]
+            for _ in range(FORWARD_ITERATIONS):
+                q = r - np.log(F / S) / T
+                eu_calls, _ = european_equivalent(calls, S, K, T, r, q, True)
+                eu_puts, _ = european_equivalent(puts, S, K, T, r, q, False)
+                F = parity_forward(K, eu_calls, eu_puts, np.exp(-r * T), n_parity_strikes)
+        forwards[expiry] = F
 
     quotes["forward"] = quotes["expiry"].map(forwards)
     quotes = quotes[quotes["forward"].notna()]
@@ -213,10 +299,18 @@ def clean_chain(
     )
     quotes = quotes[otm]
 
+    quotes["eep"] = 0.0
+    if american:
+        # One batch for every expiry: each option's tree has its own T, r and q.
+        S, F, T, r = (quotes[c].to_numpy() for c in ("spot", "forward", "T", "r"))
+        _, quotes["eep"] = european_equivalent(
+            quotes["mid"], S, quotes["strike"], T, r, r - np.log(F / S) / T, is_call[otm]
+        )
+
     quotes["k"] = np.log(quotes["strike"] / quotes["forward"])
     # Price on the forward: S = F with q = r makes Black-Scholes' forward S e^{(r-q)T} equal F.
     quotes["iv"] = implied_vol(
-        quotes["mid"].to_numpy(),
+        (quotes["mid"] - quotes["eep"]).to_numpy(),
         S=quotes["forward"].to_numpy(),
         K=quotes["strike"].to_numpy(),
         T=quotes["T"].to_numpy(),

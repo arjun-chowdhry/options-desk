@@ -3,7 +3,8 @@
 European prices are checked against Black-Scholes (convergence at the O(1/N) rate, and exact
 put-call parity on the tree). American prices are checked against a textbook value and the
 no-arbitrage facts: never below European or intrinsic, and an American call on a
-non-dividend stock is never exercised early.
+non-dividend stock is never exercised early. The early-exercise premium is checked against a
+fine-tree reference and the cases where it must be exactly zero.
 """
 
 import numpy as np
@@ -11,7 +12,7 @@ import pytest
 from hypothesis import given, settings
 from hypothesis import strategies as st
 
-from optdesk.pricing.binomial import binomial_price
+from optdesk.pricing.binomial import binomial_price, early_exercise_premium
 from optdesk.pricing.black_scholes import bs_price
 
 CASES = {
@@ -166,3 +167,55 @@ def test_invalid_inputs_raise(bad):
     args.update(bad)
     with pytest.raises(ValueError):
         binomial_price(**args)
+
+
+# --- Early-exercise premium ----------------------------------------------------------------
+
+
+def test_premium_zero_for_call_without_dividends():
+    """Merton: never exercise a call early on a non-dividend stock, so the premium is 0."""
+    K = np.array([80.0, 100.0, 120.0])
+    eep = early_exercise_premium(100.0, K, 1.0, 0.05, 0.2, 0.0, True)
+    np.testing.assert_allclose(eep, 0.0, atol=1e-12)
+
+
+def test_premium_zero_for_put_at_zero_rates():
+    """With r = q = 0 there's no interest to earn on K by exercising, so a put waits too."""
+    K = np.array([80.0, 100.0, 120.0])
+    eep = early_exercise_premium(100.0, K, 1.0, 0.0, 0.2, 0.0, False)
+    np.testing.assert_allclose(eep, 0.0, atol=1e-12)
+
+
+def test_put_premium_positive_and_grows_in_the_money():
+    """With r > 0 the right to take K early is worth more the deeper the put is in the money."""
+    K = np.array([80.0, 90.0, 100.0, 110.0, 120.0])
+    eep = early_exercise_premium(100.0, K, 1.0, 0.05, 0.2, 0.0, False)
+    assert np.all(eep > 0)
+    assert np.all(np.diff(eep) > 0)
+
+
+def test_call_premium_positive_with_high_dividend():
+    """With q > r a deep ITM call is worth exercising to collect the stock's yield."""
+    assert early_exercise_premium(100.0, 70.0, 1.0, 0.01, 0.2, 0.08, True) > 0.1
+
+
+def test_premium_matches_fine_tree_reference():
+    """SPY-like puts, 1 month to 1 year: within ~1.5 cents of a 4,000-step reference."""
+    S, r, q = 580.0, 0.04, 0.013
+    T = np.repeat([1 / 12, 0.25, 1.0], 4)
+    K = S * np.exp(np.tile([-0.2, -0.05, 0.0, 0.1], 3))
+    sigma = 0.2
+
+    def fine(american):
+        return (
+            sum(
+                binomial_price(S, K, T, r, sigma, q, False, american=american, steps=n)
+                for n in (4000, 4001)
+            )
+            / 2
+        )
+
+    reference = fine(True) - fine(False)
+    eep = early_exercise_premium(S, K, T, r, sigma, q, False)
+    np.testing.assert_allclose(eep, reference, atol=0.015)
+    assert reference.max() > 1.0  # the test covers premiums that matter, not just zeros

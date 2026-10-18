@@ -41,7 +41,7 @@ from numpy.typing import ArrayLike, NDArray
 
 from optdesk.pricing.black_scholes import _validate
 
-__all__ = ["binomial_price"]
+__all__ = ["binomial_price", "early_exercise_premium"]
 
 
 def binomial_price(
@@ -110,3 +110,40 @@ def binomial_price(
 
     price = np.where(expiring, payoff(S), value)
     return price.reshape(shape)[()]
+
+
+def early_exercise_premium(
+    S: ArrayLike,
+    K: ArrayLike,
+    T: ArrayLike,
+    r: ArrayLike,
+    sigma: ArrayLike,
+    q: ArrayLike = 0.0,
+    call: ArrayLike = True,
+    *,
+    steps: int = 200,
+) -> NDArray:
+    """What the right to exercise early is worth: American minus European price.
+
+    This is what ``data.clean`` subtracts from American quotes to get European-equivalent
+    prices that Black-Scholes can invert ("de-Americanizing").
+
+    How it's computed, and why: both prices come from the same CRR trees, each averaged over
+    ``steps`` and ``steps + 1`` to damp the odd/even oscillation. We compared three recipes on
+    SPY-like puts (1 month to 1 year, deep OTM to ITM) against a 4,000-step reference.
+    Averaging N and N+1 halves the error of a single tree. Differencing two trees beats "tree
+    American minus exact Black-Scholes", because part of the tree error is common to the
+    American and European prices. At ``steps=200`` the premium is good to about 1 cent on a
+    $580 underlying, around 0.005 vol points.
+    """
+
+    def averaged(american: bool) -> NDArray:
+        return (
+            sum(
+                binomial_price(S, K, T, r, sigma, q, call, american=american, steps=n)
+                for n in (steps, steps + 1)
+            )
+            / 2
+        )
+
+    return np.maximum(averaged(True) - averaged(False), 0.0)

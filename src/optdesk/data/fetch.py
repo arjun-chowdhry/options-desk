@@ -141,6 +141,11 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--max-expiries", type=int, default=None, help="nearest N expiries only")
     parser.add_argument("--root", type=Path, default=DEFAULT_ROOT, help="snapshot folder")
     parser.add_argument("--overwrite", action="store_true", help="replace today's snapshot")
+    parser.add_argument(
+        "--european",
+        action="store_true",
+        help="options are European (index options such as ^SPX); default is American (SPY)",
+    )
     args = parser.parse_args(argv)
 
     chain = fetch_chain(args.ticker, args.max_expiries)
@@ -148,7 +153,7 @@ def main(argv: list[str] | None = None) -> int:
     path = save_snapshot(chain, curve, args.root, overwrite=args.overwrite)
     print(f"saved {len(chain)} raw quotes to {path}")
 
-    clean = clean_chain(chain, curve)
+    clean = clean_chain(chain, curve, american=not args.european)
     print(f"{len(clean)} quotes survive cleaning")
     for expiry, group in clean.groupby("expiry"):
         atm = group.iloc[(group["k"].abs()).argmin()]

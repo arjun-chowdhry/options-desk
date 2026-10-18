@@ -44,11 +44,12 @@ streamlit run src/optdesk/app/main.py   # dashboard (from M5)
 src/optdesk/
   pricing/  black_scholes.py, greeks.py, implied_vol.py, binomial.py
   data/     fetch.py, clean.py, rates.py, store.py
-  surface/  svi.py, arbitrage.py, plot.py
+  surface/  svi.py, arbitrage.py, plot.py, synthetic.py
   sim/      paths.py, hedging.py, market_maker.py
   app/      main.py, pages/
 tests/      mirrors the above; fixtures/ holds a saved chain for offline tests
 data/snapshots/   gitignored, {TICKER}/{YYYY-MM-DD}.parquet
+data/plots/       gitignored, HTML output of python -m optdesk.surface.plot
 ```
 
 ## Milestones
@@ -65,9 +66,15 @@ data/snapshots/   gitignored, {TICKER}/{YYYY-MM-DD}.parquet
   - [ ] Live-fetch test on Monday 2026-10-19 during market hours (9:30am–4pm New York):
     `python -m optdesk.data.fetch SPY --max-expiries 6`. Check that the snapshot saves, most
     quotes survive cleaning, forwards are near spot, and ATM vols look sensible.
-- [ ] **M3 Surface:** raw SVI fit per expiry with parameter bounds; butterfly check (Gatheral
-  g(k) >= 0) and calendar check (w non-decreasing in T); Plotly 3D surface + smiles. Tests:
-  parameter recovery, Axel Vogt arbitrage example flagged, crossed slices flagged.
+- [ ] **M3 Surface** (code complete and merged, live fit pending): raw SVI fit per expiry
+  with parameter bounds; butterfly check (Gatheral g(k) >= 0) and calendar check (w
+  non-decreasing in T); Plotly 3D surface + smiles; de-Americanizing for SPY (early-exercise
+  premium stripped on a CRR tree in `clean_chain(american=True)`); synthetic SSVI chain
+  (`surface/synthetic.py`) as the answer key. Tests: parameter recovery, Axel Vogt arbitrage
+  example flagged, crossed slices flagged.
+  - [x] Code, tests, README section, study notes (sections 9-12) (merged to main).
+  - [ ] Fit Monday's live snapshot: `python -m optdesk.surface.plot --ticker SPY --date
+    2026-10-19`. Check RMSE is small, the arbitrage flags, and that the smiles look sensible.
 - [ ] **M4a Hedging sim:** GBM (exact) and Heston (full-truncation Euler) paths; delta-hedge
   P&L with transaction costs. Tests: theoretical moments, martingale property, P&L std shrinks
   as 1/sqrt(rebalances), costs reduce P&L, wrong-vol P&L sign.
