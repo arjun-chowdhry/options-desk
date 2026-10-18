@@ -66,14 +66,13 @@ data/plots/       gitignored, HTML output of python -m optdesk.surface.plot
   - [ ] Live-fetch test on Monday 2026-10-19 during market hours (9:30am–4pm New York):
     `python -m optdesk.data.fetch SPY --max-expiries 6`. Check that the snapshot saves, most
     quotes survive cleaning, forwards are near spot, and ATM vols look sensible.
-- [ ] **M3 Surface** (code complete on branch `m3-surface`, not merged): raw SVI fit per expiry
+- [ ] **M3 Surface** (code complete and merged, live fit pending): raw SVI fit per expiry
   with parameter bounds; butterfly check (Gatheral g(k) >= 0) and calendar check (w
   non-decreasing in T); Plotly 3D surface + smiles; de-Americanizing for SPY (early-exercise
   premium stripped on a CRR tree in `clean_chain(american=True)`); synthetic SSVI chain
   (`surface/synthetic.py`) as the answer key. Tests: parameter recovery, Axel Vogt arbitrage
   example flagged, crossed slices flagged.
-  - [x] Code, tests, README section, study notes (sections 9-12), committed on `m3-surface`.
-  - [ ] Review, then merge to main.
+  - [x] Code, tests, README section, study notes (sections 9-12) (merged to main).
   - [ ] Fit Monday's live snapshot: `python -m optdesk.surface.plot --ticker SPY --date
     2026-10-19`. Check RMSE is small, the arbitrage flags, and that the smiles look sensible.
 - [ ] **M4a Hedging sim:** GBM (exact) and Heston (full-truncation Euler) paths; delta-hedge
