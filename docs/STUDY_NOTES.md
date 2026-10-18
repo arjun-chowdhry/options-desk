@@ -7,6 +7,7 @@ tests in `tests/` are the proof each claim holds.
 - **M1 Pricing** (`pricing/`): sections 1–4
 - **M2 Data** (`data/`): sections 5–8
 - **M3 Surface** (`surface/`, plus de-Americanizing in `data/clean.py`): sections 9–12
+- **M4a Hedging** (`sim/paths.py`, `sim/hedging.py`, `sim/plot.py`): sections 13–15
 
 Notation: spot `S`, strike `K`, expiry `T` in years, rate `r`, dividend yield `q`, vol `σ`,
 forward `F = S·e^((r−q)T)`, `N` the standard normal CDF, `n` its density.
@@ -742,3 +743,238 @@ Standardized moneyness:  z = k / √w(0)
    Calm markets: near-term vol is low and longer-dated vol prices in the chance of future
    turbulence. In a selloff, near-term vol spikes above long-dated vol and the term structure
    inverts (backwardation), a classic stress signal.
+
+---
+
+# M4a: Hedging simulator
+
+Notation as above, plus `Γ` gamma, `σ_i` the implied (hedge) vol, `σ_r` the realized vol,
+`N` the number of hedges, and `v` the instantaneous variance in Heston.
+
+Charts: `docs/images/` (regenerate with `python -m optdesk.sim.plot`).
+
+## 13. Simulating prices: GBM and Heston (`sim/paths.py`)
+
+### Why it works
+**GBM** is the Black-Scholes world: `dS/S = μ dt + σ dW`. It has an exact solution,
+`S_(t+dt) = S_t · exp((μ − σ²/2)dt + σ√dt·Z)`, so we simulate with that and there's no
+discretization error at all. One big step to expiry gives the same distribution as a thousand
+small ones (a test checks this). The grid only decides how often the hedger *looks*.
+
+The `−σ²/2` is volatility drag: the average log return is lower than the average return,
+because ups and downs of the same size don't cancel in price terms (+10% then −10% leaves you
+at 99). It's what makes `E[S_T] = S_0·e^(μT)` come out right.
+
+**Heston** lets variance move: `dv = κ(θ − v)dt + ξ√v dW_v`, with `corr(dW_S, dW_v) = ρ`.
+Variance mean-reverts to `θ` at speed `κ`, has its own vol `ξ` ("vol of vol"), and for
+equities `ρ < 0`: prices fall when vol spikes. That negative correlation is what produces
+the equity skew we fitted in M3.
+
+The catch: the true `v` never goes negative, but a simulated step can. **Full-truncation
+Euler** lets the simulated `v` dip below zero but uses `v⁺ = max(v, 0)` wherever it enters the
+drift or the noise. Lord, Koekkoek & van Dijk (2010) compared the simple fixes, and full
+truncation had the least bias. Resetting to zero (absorption) or flipping the sign
+(reflection) both push variance up. Exact schemes (Broadie-Kaya, Andersen's QE) are more
+accurate per step but much more code, and buy little when we take 441 small steps anyway.
+The price uses a log-Euler step, which keeps it positive.
+
+**Feller condition** `2κθ ≥ ξ²`: when it holds, the true `v` never touches zero. Fitted equity
+parameters often break it (our study uses `κ = 2, θ = 0.04, ξ = 0.5`: 0.16 < 0.25), which is
+exactly why the scheme has to handle `v` hitting zero.
+
+### Key formulas
+```
+GBM exact step:   S_(t+dt) = S_t · exp((μ − σ²/2)dt + σ√dt·Z)
+GBM moments:      E[S_T] = S_0 e^(μT),   Var[S_T] = S_0² e^(2μT)(e^(σ²T) − 1)
+Martingale:       with μ = r − q, E[S_t e^(−(r−q)t)] = S_0 for every t
+Heston variance:  E[v_t] = θ + (v_0 − θ)e^(−κt)        (half-life ln2/κ)
+Full truncation:  v_(t+dt) = v_t + κ(θ − v_t⁺)dt + ξ√(v_t⁺ dt)·Z_v
+```
+
+### Interview questions
+1. **Why is the expected log return `μ − σ²/2` and not `μ`?**
+   Jensen's inequality: log is concave, so `E[ln S] < ln E[S]`. A path that goes +10%, −10%
+   ends below where it started. The drag grows with variance, which is why high-vol assets
+   compound more slowly than their average return suggests.
+2. **What's a martingale and why test for it?**
+   A process whose expected future value is today's value. Under the risk-neutral measure the
+   discounted price (with dividends reinvested) must be one, or you could make money on
+   average by holding stock and shorting bonds. If a simulator fails this test, every price
+   it produces is wrong.
+3. **How do you simulate Heston, and what goes wrong?**
+   Euler on `v` can go negative, where `√v` doesn't exist. Full truncation (use `max(v, 0)`)
+   is simple and has the least bias of the quick fixes. Andersen's QE scheme is the industry
+   standard when you need accuracy with big steps.
+4. **What does each Heston parameter do to the smile?**
+   `ρ` tilts it (negative → put skew); `ξ` curves it (more vol of vol → fatter wings); `κ`
+   controls how fast the smile flattens with maturity; `θ` and `v_0` set the long- and
+   short-dated ATM levels.
+
+## 14. Delta hedging and the gamma P&L formula (`sim/hedging.py`)
+
+### Why it works
+Buy one call at 20% implied vol and sell `Δ` shares against it. Over a short step the option
+changes by `Δ·dS + ½Γ·dS² + θ·dt` and the hedge by `−Δ·dS`, so the `dS` terms cancel and you're
+left with gamma and theta. In Black-Scholes, theta is exactly what it costs to own the gamma:
+`θ ≈ −½ΓS²σ_i²` (ignoring rates). So each step earns
+
+```
+½ΓS² · (dS²/S² − σ_i² dt)
+```
+
+`dS²/S²` is what the stock *actually* moved, squared: realized variance. If the stock
+realizes more variance than the 20% you paid for, every step earns a little; if less, every
+step loses a little. Add it up over the option's life and you get the **gamma P&L formula**:
+
+```
+P&L ≈ ∫ e^(−rt) · ½ Γ_t S_t² (σ_r² − σ_i²) dt
+```
+
+So buying an option and delta-hedging it is a bet that realized vol will beat implied vol,
+not a bet on direction. That's what "trading vol" means on a desk.
+
+Results (5,000 paths, hourly hedging, 20% implied; `gamma_pnl.png`):
+
+| Realized vol | Simulated mean P&L | Gamma formula | BS(σ_r) − BS(σ_i) | Path correlation |
+| --- | --- | --- | --- | --- |
+| 10% | −1.972 ± 0.007 | −1.971 | −1.971 | 0.99 |
+| 15% | −0.992 ± 0.005 | −0.993 | −0.987 | 0.95 |
+| 20% | +0.004 ± 0.002 | 0 | 0 | |
+| 25% | +0.993 ± 0.007 | +0.991 | +0.987 | 0.86 |
+| 30% | +2.002 ± 0.013 | +1.992 | +1.975 | 0.94 |
+| Heston (avg 19.9%) | −0.163 ± 0.014 | −0.164 | no closed form | 0.98 |
+
+(± is one standard error.) Three things to take from it:
+
+- **On average, the answer is a price difference.** With risk-neutral paths, the average P&L
+  of hedging at `σ_i` when the world realizes `σ_r` is exactly `BS(σ_r) − BS(σ_i)`: you paid
+  the 20% price for something worth the 25% price.
+- **Path by path, it depends on *when* the variance came.** The formula weights each moment by
+  `ΓS²` (dollar gamma), which is biggest near the strike and close to expiry. Realize your
+  excess variance while the stock is far from the strike and you collect little. That's why
+  the formula and the P&L vary from path to path, and why variance swaps exist: they pay
+  realized minus implied variance with no path weighting. The leftover scatter around the
+  formula is discrete-hedging noise (section 15), which is bigger when the stock moves more.
+- **The drift doesn't matter.** A hedged option has no `dS` exposure, so the stock's expected
+  return drops out. A test hedges paths drifting at 15% a year and still gets zero mean P&L.
+  This is the Black-Scholes insight in simulation form.
+
+**Why hedge at the implied vol, not the realized?** You don't know realized vol until it's
+over. Hedging at realized would give a smooth P&L equal to `BS(σ_r) − BS(σ_i)` but needs
+foresight. Hedging at implied makes the P&L path-dependent but has the same average.
+
+**Stochastic vol (Heston).** The formula still holds path by path if you plug in the
+variance each path actually had (`v_t`) instead of a constant `σ_r²`: correlation 0.98. The
+surprise is the mean. Average variance is exactly 0.04 (20% vol), yet the hedged call *lost*
+$0.16. The reason is Jensen's inequality again. An ATM option's value is roughly linear in
+*vol*, not variance, and when variance is random, the average of `√(path variance)` is below
+`√(average variance)`. In a check with 20,000 paths, the average per-path realized vol was
+19.1%, and `vega × (19.1% − 20%) = −$0.17` matched the simulated loss (−$0.16). Setting
+`ρ = 0` gave almost the same loss (−$0.17), so it's the randomness of vol, not its
+correlation with spot, that costs money here. In Heston terms the 3-month ATM call is worth
+less than Black-Scholes at `√θ`, i.e. Heston's ATM implied vol sits below `√θ`.
+
+### Key formulas
+```
+Hedged step:      dΠ = ½ Γ S² (dS²/S² − σ_i² dt)       (long option, short Δ shares)
+Gamma P&L:        P&L = ∫ e^(−rt) ½ Γ S² (σ_r² − σ_i²) dt
+Mean (μ = r − q): E[P&L] = BS(σ_r) − BS(σ_i) ≈ vega · (σ_r − σ_i)
+Break-even move:  daily |move| ≈ σ_i / √252   (≈ 1.26% a day at 20% vol)
+```
+
+### Interview questions
+1. **You buy an option at 20% implied and realized vol comes in at 25%. Did you make money?**
+   If you delta-hedged: on average yes, roughly `vega × 5 points` (+$0.99 here). But it's
+   path-dependent; if the big moves came far from the strike, or early when gamma was small,
+   you can still lose. Unhedged, it depends on direction, which is a different trade.
+2. **Explain the gamma-theta trade-off.**
+   Long gamma earns `½ΓS²·(move/S)²` on every move, up or down; theta is the rent, `½ΓS²σ_i²`
+   per unit time. You break even if the stock moves about one implied standard deviation per
+   period: `σ_i/√252 ≈ 1.26%` a day at 20% vol.
+3. **What's the difference between a delta-hedged option and a variance swap?**
+   Both pay realized minus implied variance, but the hedged option weights each moment by
+   dollar gamma `ΓS²`, so it's path-dependent and concentrated near the strike. A variance
+   swap weights every moment equally. You can build one from a strip of options across all
+   strikes weighted `1/K²`.
+4. **Your hedged long call lost money even though average variance equalled implied. How?**
+   Discrete hedging noise (std ~$0.17 hourly here), transaction costs, jumps through the
+   strike, or vol convexity: with random vol, the average realized *vol* is below the square
+   root of the average variance, and an ATM option pays on vol (the Heston result above).
+5. **Who is short gamma and why would they be?**
+   Option sellers (market makers net short customer demand, covered-call writers). They
+   collect theta and lose when realized beats implied. It pays on average because implied vol
+   usually trades above subsequent realized vol (the variance risk premium), but it loses big
+   in selloffs.
+
+## 15. Hedging frequency and transaction costs (`sim/hedging.py`, `sim/plot.py`)
+
+### Why it works
+Black-Scholes assumes you hedge continuously. Hedging `N` times instead leaves, on each
+interval, an unhedged `½ΓS²(ΔS²/S² − σ²Δt)`. It's zero on average, but each one is
+nonzero. These errors are roughly independent from interval to interval, so they add like
+noise: `N` errors of size `~1/N` give a total spread of `~1/√N`. Derman & Kamal (1999) worked
+out the constant for an ATM option:
+
+```
+std(P&L) ≈ √(π/4) · vega · σ / √N
+```
+
+Our 5,000-path study (3-month ATM call, `S = K = 100`, `r = 4%`, `q = 1.3%`, premium $4.31,
+realized = implied = 20%, same paths at every frequency; `hedge_frequency.png`,
+`hedge_pnl_histograms.png`):
+
+| Frequency | Hedges N | Mean P&L | Std P&L | Derman-Kamal | Mean / SE |
+| --- | --- | --- | --- | --- | --- |
+| monthly | 3 | −0.015 | 1.822 | 2.021 | −0.6 |
+| biweekly | 7 | −0.013 | 1.229 | 1.323 | −0.7 |
+| weekly | 13 | −0.004 | 0.902 | 0.971 | −0.3 |
+| every 2 days | 32 | −0.000 | 0.587 | 0.619 | −0.0 |
+| daily | 63 | −0.004 | 0.431 | 0.441 | −0.6 |
+| every 3 hours | 147 | −0.003 | 0.286 | 0.289 | −0.8 |
+| hourly | 441 | −0.002 | 0.166 | 0.167 | −0.7 |
+
+Log-log slope of std vs `N`: −0.48 (theory −0.5). Derman-Kamal is an asymptotic formula, so
+it's 10% high at 3 hedges and within 1% at 441. Every mean is within one standard error of
+zero.
+
+**Transaction costs push the other way** (`hedge_costs.png`). Each rehedge trades `|ΔΔ|`
+shares and pays the half-spread on them. Each delta change is `~1/√N` and there are `N` of
+them, so turnover and cost grow like `√N` while risk falls like `1/√N`. At 5bp per share
+traded: expected cost $0.05 monthly → $0.15 daily → $0.36 hourly, while risk falls from $1.82
+to $0.20. (Cost grows a bit slower than √N here because the opening hedge, a fixed cost, is a
+large share of the total at low frequencies.) Somewhere in between is the frequency where one
+more hedge removes less risk than it costs; where exactly depends on how much the desk will
+pay to cut risk. In practice desks hedge on a delta band (rehedge when delta drifts by more
+than some amount), not on a clock. Leland (1985) folds costs into an adjusted vol: someone
+short an option should charge a *higher* vol to cover hedging costs.
+
+**Design choice: same paths at every frequency.** Simulating new paths per frequency would
+mix hedging differences with simulation luck. Hedging one set of hourly paths at every
+frequency (common random numbers) keeps the comparison clean; the monthly hedger just looks
+at the price less often.
+
+### Key formulas
+```
+Derman-Kamal:     std(P&L) ≈ √(π/4) · vega · σ / √N     (ATM, realized = implied)
+Cost of a trade:  cost · |shares traded| · S             (cost = half-spread, e.g. 5bp)
+Scaling:          hedging error ~ 1/√N,  total cost ~ √N
+```
+
+### Interview questions
+1. **If you hedge 4× as often, how much does your P&L uncertainty fall?**
+   By half: it scales like `1/√N`. Here 3 → 13 hedges cuts the std from $1.82 to $0.90, and
+   63 → 441 (7×) cuts it from $0.43 to $0.17 (÷2.6 ≈ √7).
+2. **Why not just hedge continuously?**
+   Costs. Each rehedge pays the bid-ask spread, and total cost grows like `√N`. At some
+   frequency the next hedge costs more than the risk it removes is worth. Markets also close
+   overnight, so there's always gap risk you can't hedge.
+3. **Is discrete hedging error biased?**
+   To first order no: it's zero on average, just noisy. Every mean in the table is within one
+   SE of zero. Costs, by contrast, are a pure drag.
+4. **How would you hedge in practice?**
+   Rehedge when delta leaves a band rather than at fixed times. Make the band narrower where
+   gamma is big (near the strike, near expiry), because delta moves faster there, and wider
+   when trading is expensive.
+5. **Short-dated ATM option: what's the bigger risk, hedging error or vol?**
+   Near expiry, gamma explodes near the strike, so hedging error and pin risk dominate. For
+   longer-dated options vega dominates, and the question is realized vs implied vol.
