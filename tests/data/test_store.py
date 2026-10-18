@@ -99,7 +99,8 @@ def test_command_line_fetch_saves_and_summarizes(fake_yf, tmp_path, capsys, trut
     monkeypatch.setattr(fetch, "fetch_chain", lambda t, n=None: real_fetch(t, n, asof=asof))
     main = fetch.main
 
-    assert main(["SPY", "--max-expiries", "2", "--root", str(tmp_path)]) == 0
+    # The fixture is priced as European options, so tell the cleaner (the default is American).
+    assert main(["SPY", "--max-expiries", "2", "--root", str(tmp_path), "--european"]) == 0
     out = capsys.readouterr().out
     saved = list((tmp_path / "SPY").glob("*.parquet"))
     assert len(saved) == 1
