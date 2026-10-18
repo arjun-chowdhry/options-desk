@@ -54,7 +54,7 @@ data/snapshots/   gitignored, {TICKER}/{YYYY-MM-DD}.parquet
 ## Milestones
 
 - [x] **M0 Scaffolding:** pyproject, package skeleton, placeholder test.
-- [ ] **M1 Pricing:** BS price with q; delta, gamma, vega, theta, rho, vanna, volga, charm;
+- [x] **M1 Pricing:** BS price with q; delta, gamma, vega, theta, rho, vanna, volga, charm;
   implied vol (Newton with Brent fallback, NaN outside no-arb bounds); CRR binomial with
   American exercise. Tests: Hull values, put-call parity (Hypothesis), every Greek vs finite
   difference, price bounds, IV round-trip, binomial converges to BS, American put >= European.
