@@ -8,7 +8,7 @@ command line runs end to end on the synthetic market and writes both HTML files.
 import numpy as np
 import pytest
 
-from optdesk.surface.plot import main, smile_figure, surface_figure
+from optdesk.surface.plot import main, smile_figure, surface_figure, surface_png_figure
 from optdesk.surface.svi import SVIParams
 
 
@@ -55,12 +55,26 @@ def test_smile_panels(market_fits, market_clean):
         np.testing.assert_allclose(np.asarray(line.y), expected)
 
 
+def test_static_png_matches_the_interactive_surface(market_fits, market_clean):
+    """The README image plots the same SVI vols as the Plotly surface, one smile per expiry."""
+    interactive = np.asarray(surface_figure(market_fits, market_clean).data[0].z, dtype=float)
+    fig = surface_png_figure(market_fits, market_clean)
+    smiles = fig.axes[1].get_lines()[0::2]  # fit line, then quote dots, per expiry
+    assert len(smiles) == len(market_fits)
+    for i, line in enumerate(smiles):
+        np.testing.assert_allclose(np.asarray(line.get_ydata(), dtype=float), interactive[i])
+    dots = fig.axes[1].get_lines()[1::2]
+    assert sum(len(d.get_ydata()) for d in dots) == len(market_clean)
+
+
 def test_command_line_writes_both_plots(tmp_path, capsys):
-    assert main(["--out", str(tmp_path)]) == 0
+    png = tmp_path / "img" / "surface.png"
+    assert main(["--out", str(tmp_path), "--png", str(png)]) == 0
     out = capsys.readouterr().out
     assert "SVI fits for synthetic SPY" in out and "Arbitrage checks" in out
     for name in ("surface.html", "smiles.html"):
         assert (tmp_path / name).stat().st_size > 100_000  # self-contained, includes plotly.js
+    assert png.read_bytes()[:8] == b"\x89PNG\r\n\x1a\n"
 
 
 def test_command_line_from_a_saved_snapshot(market, tmp_path, capsys):

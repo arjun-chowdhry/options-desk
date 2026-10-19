@@ -12,6 +12,7 @@ tests in `tests/` are the proof each claim holds.
   sections 16–18
 - **M5 Dashboard** (`pricing/portfolio.py`, `surface/market.py`, `sim/lab.py`, `app/`):
   sections 19–20
+- **M6 The whole project**: section 21, fifteen interview questions with answer outlines
 
 Notation: spot `S`, strike `K`, expiry `T` in years, rate `r`, dividend yield `q`, vol `σ`,
 forward `F = S·e^((r−q)T)`, `N` the standard normal CDF, `n` its density.
@@ -1335,3 +1336,147 @@ Smoke tests:       streamlit.testing.v1.AppTest runs main.py headless (no browse
    Caching keyed by inputs (same parameters → stored result), forms that batch slider
    changes into one run, and modest default path counts. The slow step, building and fitting
    the synthetic chain (~7 s), runs once per session.
+
+---
+
+# M6: The whole project
+
+## 21. Fifteen interview questions on the whole project
+
+These are the questions a trader or desk strat is likely to ask once they've seen the README.
+Each answer is an *outline*: the points to hit, in order, with the numbers to quote. Say them
+in your own words. All numbers are from the synthetic SPY market (seeded, so they reproduce
+exactly); be upfront about that.
+
+1. **Walk me through the project in two minutes.**
+   - Goal: do the core loop of an options desk end to end, and test every number.
+   - Pipeline: download SPY chains → clean (bad quotes out, forward from parity, strip the
+     American premium) → implied vols → SVI surface with arbitrage checks.
+   - On that surface, two simulators: delta hedging (what hedging actually leaves you with)
+     and market making (how a desk earns the spread and controls inventory).
+   - A Streamlit dashboard on top, with no math in the UI.
+   - Headline results: hedging error falls like `1/√N` ($1.82 monthly → $0.17 hourly on a
+     $4.31 option); inventory skew cut market-making risk 29% with no loss of mean P&L.
+
+2. **Why build on a synthetic market instead of just using real data?**
+   - With real data you never know the right answer. The synthetic chain is generated from a
+     known, arbitrage-free SSVI surface, with noise, penny ticks and American exercise, and
+     run through the *real* cleaner and fitter.
+   - So the tests can say "recover the true forward to 0.5bp and every smile to 0.1 vol
+     points", not just "it runs".
+   - The data source is swappable (`MarketData` / `VolSurface`), so live SPY is a dropdown
+     choice, not a rewrite. First live snapshot: 2026-10-19.
+
+3. **How did you clean the chain, and why take the forward from put-call parity?**
+   - Drop zero bids, crossed markets, spreads too wide relative to mid, and contracts not
+     traded in 5 days: their mids don't tell you the option's value.
+   - Keep OTM options only: they're more liquid, and parity gives the ITM side's information.
+   - Forward: `C − P = e^(−rT)(F − K)`, solved at the 5 strikes nearest the money, take the
+     median. That needs no dividend forecast or borrow assumption: it's what the market itself
+     prices. A quoted dividend yield is backward-looking and lumpy for SPY.
+
+4. **SPY options are American. Why does that matter for the surface, and what did you do?**
+   - Black-Scholes vols from American prices include the early-exercise premium: about +0.6
+     vol points on a 1-year near-the-money put, and the parity forward comes out ~38bp too low.
+   - Fix: price on a CRR tree, subtract the early-exercise premium (American − European),
+     invert the European price. The forward and the premium depend on each other, so iterate.
+   - Why CRR: recombining (`u·d = 1`), converges to Black-Scholes at O(1/N), easy to reason
+     about. Tested: zero premium where theory says (calls with no dividends, puts at zero
+     rates), and the true forward recovered to 0.5bp.
+
+5. **Why SVI for the smile, and how do you fit it reliably?**
+   - Five parameters (`a` level, `b` wing slope, `ρ` skew, `m` shift, `σ` ATM curvature).
+     Wings are linear in total variance, consistent with Lee's moment formula, and it fits
+     equity skews well.
+   - The fit is non-convex. Trick: for fixed `(m, σ)` the other three come from a linear
+     least squares, so grid over `(m, σ)`, solve exactly, then polish with bounded least
+     squares. That avoids local minima.
+   - Vega-weighted vol residuals: errors where the price is informative count more.
+   - Result: RMSE 0.01–0.04 vol points on 8 expiries.
+
+6. **What is static arbitrage on a vol surface, and how do you check for it?**
+   - Butterfly: call prices must be convex in strike (the implied density is ≥ 0). For SVI
+     that's Gatheral's `g(k) ≥ 0`, checked on a grid well beyond the quotes, plus Lee's wing
+     bound. Our minimum `g` is 0.25. A test checks that Axel Vogt's famous SVI slice is flagged.
+   - Calendar: total variance `w = σ²T` must not fall with expiry at fixed `k`.
+   - We *report* where and how badly a surface fails; we don't force it. A production system
+     would refit or drop the bad slice.
+
+7. **You bought a 3-month ATM call at 20% vol and delta-hedged it. What's your P&L?**
+   - Hedged P&L ≈ `∫ ½ΓS²(σ²_realized − σ²_implied) dt`: you're long gamma, paying theta.
+   - Stock realizes 25%: +$0.99 on average; realizes 15%: −$0.99. Matches the formula and the
+     Black-Scholes value gap `BS(25%) − BS(20%)`.
+   - The stock's direction doesn't matter, only how much it moves. Path by path, the formula
+     and the P&L correlate 0.86–0.99.
+
+8. **If realized = implied, why isn't the hedged P&L exactly zero?**
+   - Because you hedge discretely. Between hedges you carry unhedged gamma, and the P&L
+     depends on *where* along the path the vol was realized (gamma is highest near the strike).
+   - Mean zero, but std ∝ `1/√N`: $1.82 hedging monthly (3 hedges), $0.17 hourly (441).
+     Log-log slope −0.48 vs −0.5 in theory, within 10% of the Derman-Kamal formula.
+   - Quadrupling the hedge frequency only halves the risk.
+
+9. **How would you pick a hedging frequency with transaction costs?**
+   - Risk falls like `1/√N`, but costs rise roughly like `√N` (each hedge trades about
+     `1/√N` shares' worth of delta change, and there are N hedges).
+   - At a 5bp half-spread, daily → hourly cuts std from $0.43 to $0.20, but costs go from
+     $0.15 to $0.36 (8% of the premium).
+   - So it's a risk-budget decision: minimize cost + λ·variance. In practice desks hedge on
+     delta *bands* (rebalance when delta drifts past a threshold), not on a clock.
+
+10. **What changes under stochastic vol? Why Heston, and why full-truncation Euler?**
+    - Under Heston, realized vol is random, so even a well-hedged option carries vol risk.
+      The gamma formula still explains the P&L: mean −$0.163 vs −$0.164 predicted, path
+      correlation 0.98.
+    - Heston: mean-reverting variance and spot-vol correlation (−0.7: selloffs raise vol),
+      which produces a skew. It's the standard first stochastic-vol model.
+    - Simulating it: plain Euler can make variance negative. Full truncation uses `max(v, 0)`
+      in both the drift and the diffusion, and has the smallest bias of the simple fixes
+      (Lord, Koekkoek & van Dijk 2010). Tested: no negative variance even when Feller fails.
+
+11. **Explain Avellaneda-Stoikov, and why you used it in vol space.**
+    - A-S: a dealer holding inventory `q` quotes around a *reservation price* `s − qγσ²H`
+      (shaded against the inventory) with a spread `γσ²H + (2/γ)ln(1 + γ/k)` (risk
+      compensation plus the monopolist's markup).
+    - An options desk hedges delta, so the leftover inventory risk is *vega*. Treat the vol
+      level as the risky asset: every quote moves by `γσ_v²H·(book vega)` vol points. Long
+      vega → lower all your vols.
+    - That's also how traders talk: "I'm long vega, I'm lowering my offers."
+
+12. **Your simulated desk makes $305k a month. Do you believe it?**
+    - Not as a revenue forecast; it's an upper bound. Three reasons:
+    - **No adverse selection:** customers are uninformed. Real flow is partly informed, and
+      informed trades cost you the spread and more.
+    - **Theo is the true surface.** A real theo has fitting error, which customers pick off.
+    - **No competition:** no other market makers, queue position or price improvement.
+    - What I *do* believe are the comparisons, because both desks see the same market and the
+      same customers (common random numbers).
+
+13. **Skewing cut risk 29% without lowering the mean. Why, and where does it stop working?**
+    - Without skew, inventory is a random walk that only the limit stops (average |vega|
+      $10.4k per vol point, a limit binding on 4.5% of steps). With skew it mean-reverts
+      ($3.0k, 0.6%). Inventory P&L std: $35k → $14k.
+    - The mean holds because fill rates are convex in quote distance: the side shaded towards
+      theo gains more fills than the other side loses (737 vs 720 fills).
+    - Limit: past `γ ≈ 5×10⁻⁵` risk levels off near $24k and the desk gives up spread ($301k
+      at `γ = 2×10⁻⁴`). What remains is gamma and smile risk that one vega number can't see,
+      e.g. short front-month gamma against long back-month vega.
+
+14. **How do you test code whose output is random?**
+    - A seeded `np.random.Generator` everywhere: same seed, same numbers.
+    - Test against theory with tolerances in standard errors: means within 4 SE, GBM moments,
+      the martingale property, the `1/√N` slope, Derman-Kamal within 10%.
+    - Exact identities where they exist: P&L buckets sum to the mark-to-market P&L to 1e-9,
+      short = −long exactly, hedged put-call parity to 1e-10.
+    - Common random numbers: compare strategies on the same paths, so a small difference is
+      real and not luck.
+    - Everything offline: yfinance is mocked and network calls are blocked in tests.
+
+15. **What's the biggest weakness, and what would you do next?**
+    - Biggest weakness: every result is on a synthetic surface. Next is the live SPY fit:
+      check RMSE and arbitrage flags on real quotes, then rerun the market maker on it.
+    - Model upgrades, in order of value: adverse selection in the fill model (fills that
+      predict the next move); non-parallel vol moves (skew and term-structure factors) so the
+      skew sees more than one number; delta-band hedging; a joint SSVI fit that rules out
+      calendar arbitrage by construction.
+    - Engineering: CI on every push (pytest + ruff) and a coverage badge.

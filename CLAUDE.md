@@ -102,5 +102,10 @@ data/plots/       gitignored, HTML output of python -m optdesk.surface.plot
   - [x] Merged to main. Run: `streamlit run src/optdesk/app/main.py`.
 - [ ] **M6 Polish:** README with screenshots, design decisions, CI (GitHub Actions: pytest +
   ruff), coverage badge, talking-points doc.
+  - [x] README rewritten (summary, results with screenshots and numbers, install/run,
+    assumptions and limitations, module reference); `docs/images/surface.png` from
+    `python -m optdesk.surface.plot --png docs/images/surface.png`; study notes section 21
+    (15 whole-project interview questions). Merged to main.
+  - [ ] CI (GitHub Actions: pytest + ruff), coverage badge, talking-points doc.
 
 Each milestone is done when: tests green, `ruff check .` clean, README section written, committed.
