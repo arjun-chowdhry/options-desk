@@ -24,7 +24,7 @@ pytest --cov=optdesk                    # tests + coverage report
 ruff check .                            # lint
 ruff format .                           # auto-format
 streamlit run src/optdesk/app/main.py   # dashboard (from M5)
-python scripts/snapshot.py              # save today's SPY snapshot (Task Scheduler runs this)
+python scripts/snapshot.py              # save today's SPY snapshot (Task Scheduler: weekdays 2:15pm Central)
 ```
 
 ## Conventions

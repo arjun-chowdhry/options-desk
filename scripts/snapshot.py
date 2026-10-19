@@ -20,7 +20,9 @@ Why these choices
 - *One ticker failing doesn't stop the others,* and the exit code is 1 if any failed, so Task
   Scheduler's "Last Run Result" column shows that something went wrong.
 - *Run while the market is open.* After the close many bids come back as zero and the
-  cleaner throws most quotes away (see ``optdesk.data.fetch``).
+  cleaner throws most quotes away (see ``optdesk.data.fetch``). The scheduled task ("optdesk
+  SPY snapshot") runs weekdays at 2:15pm Central = 3:15pm New York, 45 minutes before the
+  close: late enough to capture the day's surface, early enough that quotes are still live.
 """
 
 from __future__ import annotations
