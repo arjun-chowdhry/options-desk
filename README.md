@@ -166,3 +166,51 @@ real-world drift), std slope −½ and within 10% of Derman-Kamal, the right sig
 standard errors, the formula tracking P&L path by path under GBM and Heston, hedged
 put-call parity (exact to 1e-10 without dividends), short = −long exactly, and costs that are
 non-negative, grow with frequency and lower P&L by exactly their amount.
+
+## Market-making simulator (`optdesk.sim.market_maker`)
+
+| Module | What it does | Key design choice |
+| --- | --- | --- |
+| `surface/source.py` | One `VolSurface` interface (`implied_vol(k, T)`) with three sources: the synthetic SSVI surface, any SVI fit table (live snapshots), and a flat surface | The simulator never knows where vols come from; fitted slices interpolate total variance linearly in T, which can't create calendar arbitrage |
+| `market_maker.py` | Quotes bid/ask around theo on a book of SPY options, takes Poisson customer flow, tracks book delta, gamma and vega, delta-hedges every step, skews quotes by inventory, enforces vega and gamma limits, and splits P&L into spread capture, hedging and inventory | Avellaneda-Stoikov in *vol* space: after delta hedging the inventory risk is vega, so every quote shifts by `γ·σ_v²·H·(book vega)` vol points |
+| `mm_plot.py` | The 1,000-path study (skew vs no skew on the same market and the same customers, plus a risk-aversion sweep); `python -m optdesk.sim.mm_plot` | Common random numbers, so differences come from the quoting rule, not luck |
+
+A month of making markets in 12 SPY options (2-, 3- and 6-month expiries), on the synthetic
+surface with implied vols moving 10 points a year:
+
+![Market-making P&L attribution](docs/images/mm_attribution.png)
+
+Skewing quotes by inventory keeps the mean P&L (about $305k a month either way, ~103% of it
+spread capture) but cuts inventory risk by almost two thirds (std $35k → $14k) and total risk
+by 29% ($35.5k → $25.2k), because book vega mean-reverts instead of random-walking into the
+limit (average |vega| $10.4k → $3.0k per vol point).
+
+![Inventory](docs/images/mm_inventory.png)
+
+More charts: [one simulated month](docs/images/mm_path.png),
+[quote skew and the risk-aversion frontier](docs/images/mm_frontier.png).
+
+```powershell
+python -m optdesk.sim.mm_plot                              # synthetic surface (default)
+python -m optdesk.sim.mm_plot --ticker SPY --date 2026-10-19  # a saved snapshot's SVI fit
+```
+
+```python
+from optdesk.sim.market_maker import Contract, QuoteParams, run_market_maker, simulate_market
+from optdesk.surface.source import synthetic_surface
+
+# spot 580, r 4%, q 1.3%, 15% vol, 1 month of 546 steps, 200 paths
+market = simulate_market(580, 0.04, 0.013, 0.15, 1 / 12, 546, 200, rng=1, vol_of_vol=0.10)
+book = [Contract(K=555, T=0.25, call=False), Contract(K=585, T=0.25, call=True)]
+res = run_market_maker(market, book, synthetic_surface(), QuoteParams(vega_limit=25_000), rng=2)
+res.spread.mean(), res.hedging.mean(), res.inventory.mean(), res.total.std()
+```
+
+How it's tested: quotes symmetric at zero inventory; the skew moving both quotes against the
+inventory by exactly `γσ_v²HV`; the spread equal to the textbook A-S formula, tending to `2/k`
+as `γ → 0` and rising with vol of vol and risk aversion; Poisson fill counts matching their
+expectation (mean and variance); the three P&L buckets adding to the mark-to-market P&L to
+1e-9; zero inventory P&L with no vol moves; hedging P&L equal to minus costs on average when
+realized = implied; both delta methods agreeing on a flat surface; vega and gamma limits
+binding; reproducibility from seeds; skewing cutting the spread of ending vega by over half;
+and a fitted SVI surface reproducing the analytic one's results.

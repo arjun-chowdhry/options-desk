@@ -44,8 +44,8 @@ streamlit run src/optdesk/app/main.py   # dashboard (from M5)
 src/optdesk/
   pricing/  black_scholes.py, greeks.py, implied_vol.py, binomial.py
   data/     fetch.py, clean.py, rates.py, store.py
-  surface/  svi.py, arbitrage.py, plot.py, synthetic.py
-  sim/      paths.py, hedging.py, market_maker.py
+  surface/  svi.py, arbitrage.py, plot.py, synthetic.py, source.py (swappable VolSurface)
+  sim/      paths.py, hedging.py, plot.py, market_maker.py, mm_plot.py
   app/      main.py, pages/
 tests/      mirrors the above; fixtures/ holds a saved chain for offline tests
 data/snapshots/   gitignored, {TICKER}/{YYYY-MM-DD}.parquet
@@ -79,9 +79,16 @@ data/plots/       gitignored, HTML output of python -m optdesk.surface.plot
   P&L with transaction costs. Tests: theoretical moments, martingale property, P&L std shrinks
   as 1/sqrt(rebalances), costs reduce P&L, wrong-vol P&L sign. README section, study notes
   (sections 13-15), charts in `docs/images/` (`python -m optdesk.sim.plot`). Merged to main.
-- [ ] **M4b Market maker:** Avellaneda-Stoikov reservation price and spread, Poisson fills,
+- [ ] **M4b Market maker** (code complete on branch `m4b-marketmaker`, NOT merged; awaiting
+  Arjun's review): Avellaneda-Stoikov reservation price and spread, Poisson fills,
   inventory limits. Tests: symmetric quotes at zero inventory, skew direction, spread grows with
   gamma and sigma, reproducibility, skewing reduces inventory variance.
+  - [x] A-S in vol space (skew by book vega), delta hedging, pre-trade vega/gamma limits, P&L
+    split into spread / hedging / inventory; swappable surface (`surface/source.py`, synthetic
+    by default). Study + charts (`python -m optdesk.sim.mm_plot`), README section, study
+    notes (sections 16-18).
+  - [ ] Merge to main after review. After Monday's snapshot, optionally rerun on the live fit:
+    `python -m optdesk.sim.mm_plot --ticker SPY --date 2026-10-19 --out data/plots`.
 - [ ] **M5 App:** Streamlit pages: Pricer, Chain & IV, Surface, Hedging, Market Maker. Smoke
   tests with `streamlit.testing.v1.AppTest`.
 - [ ] **M6 Polish:** README with screenshots, design decisions, CI (GitHub Actions: pytest +
