@@ -3,12 +3,12 @@
 The math is tested elsewhere; here we check that the app runs end to end without errors on
 the synthetic market, that every tab renders its charts, that the widgets drive the
 simulations, and that a saved snapshot shows up in the data-source dropdown and loads.
-Network access is blocked, as in the other suites.
+Network access is blocked for every test (``tests/conftest.py``); loopback stays open for
+Streamlit's event loop.
 """
 
 from __future__ import annotations
 
-import socket
 from pathlib import Path
 
 import pytest
@@ -23,19 +23,7 @@ TIMEOUT = 180  # seconds; the first run builds and fits the synthetic market
 
 @pytest.fixture(autouse=True)
 def isolated(monkeypatch, tmp_path):
-    """No network, and an empty snapshot folder unless a test saves one.
-
-    Loopback stays open: on Windows, asyncio (inside Streamlit) wires its event loop with a
-    socket connected to 127.0.0.1. Anything else, e.g. yfinance, is refused.
-    """
-    connect = socket.socket.connect
-
-    def local_only(sock, address, *args, **kwargs):
-        if isinstance(address, tuple) and address[0] in ("127.0.0.1", "::1", "localhost"):
-            return connect(sock, address, *args, **kwargs)
-        raise RuntimeError("network access is disabled in tests")
-
-    monkeypatch.setattr(socket.socket, "connect", local_only)
+    """An empty snapshot folder unless a test saves one (the network is blocked globally)."""
     monkeypatch.setenv("OPTDESK_SNAPSHOT_ROOT", str(tmp_path / "snapshots"))
 
 

@@ -1,27 +1,17 @@
 """Shared fixtures for the surface tests: synthetic markets with a known SVI surface.
 
 Building the American chain and cleaning it takes a few seconds (CRR trees for every quote),
-so those fixtures are session-scoped and built once. Real network access is blocked, as in
-the data tests, to prove the surface code runs offline.
+so those fixtures are session-scoped and built once. Real network access is blocked for every
+test (``tests/conftest.py``), which proves the surface code runs offline.
 """
 
 from __future__ import annotations
-
-import socket
 
 import pytest
 
 from optdesk.data.clean import clean_chain
 from optdesk.surface.svi import fit_chain
 from optdesk.surface.synthetic import synthetic_chain
-
-
-@pytest.fixture(autouse=True)
-def no_network(monkeypatch):
-    def blocked(*args, **kwargs):
-        raise RuntimeError("network access is disabled in tests")
-
-    monkeypatch.setattr(socket.socket, "connect", blocked)
 
 
 @pytest.fixture(scope="session")
