@@ -3,13 +3,12 @@
 ``FakeTicker`` imitates the small slice of ``yf.Ticker`` that ``fetch.py`` uses (``options``,
 ``option_chain`` and ``history``) and serves ``tests/fixtures/spy_chain.csv``. The
 ``fake_yf`` fixture swaps it in, so the real fetch code runs end to end without a network.
-As a guard, every test in this folder also has real network connections disabled.
+As a guard, real network access is disabled for every test (``tests/conftest.py``).
 """
 
 from __future__ import annotations
 
 import json
-import socket
 from collections import namedtuple
 from pathlib import Path
 
@@ -57,16 +56,6 @@ class FakeTicker:
             raise ConnectionError("simulated download failure")
         close = TRUTH["treasury_quotes_pct"][self.symbol]
         return pd.DataFrame({"Close": [close - 0.05, close]})
-
-
-@pytest.fixture(autouse=True)
-def no_network(monkeypatch):
-    """Fail loudly if any test in this folder tries to open a real connection."""
-
-    def blocked(*args, **kwargs):
-        raise RuntimeError("network access is disabled in tests")
-
-    monkeypatch.setattr(socket.socket, "connect", blocked)
 
 
 @pytest.fixture

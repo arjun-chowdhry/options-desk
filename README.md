@@ -1,5 +1,7 @@
 # options-desk
 
+[![CI](https://github.com/arjun-chowdhry/options-desk/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/arjun-chowdhry/options-desk/actions/workflows/ci.yml)
+
 A Python toolkit that does the core work of an equity options desk, from raw quotes to a
 risk-managed book. It prices European and American options and their Greeks, downloads and
 cleans SPY option chains, backs out implied vols and fits an arbitrage-checked SVI
@@ -8,7 +10,8 @@ thousands of price paths, the other makes markets in a book of SPY options with
 Avellaneda-Stoikov inventory skew, risk limits and a P&L split into spread capture, hedging
 and inventory. A Streamlit dashboard puts all of it behind sliders. Every numerical function
 is unit-tested against a known answer (textbook values, no-arbitrage identities, finite
-differences, theoretical moments): 437 tests, all offline.
+differences, theoretical moments): over 400 tests, all offline, run by GitHub Actions on
+every push together with `ruff`.
 
 > **Status:** every result below is on a **synthetic SPY market**: a known, arbitrage-free
 > SSVI surface run through the real cleaning and fitting pipeline, so each number can be
