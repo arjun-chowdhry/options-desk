@@ -243,6 +243,20 @@ def test_expired_options_are_dropped(raw_chain, curve):
     assert (out["T"] > 0).all()
 
 
+def test_same_day_expiry_is_dropped_by_default(raw_chain, curve):
+    """At 2pm New York on 23 Oct, that day's options have 2 hours left: dropped unless asked."""
+    expiry_day = raw_chain.assign(asof=pd.Timestamp("2026-10-23 18:00", tz="UTC"))
+    expiry_day = expiry_day.assign(last_trade=expiry_day["asof"])
+    out = clean_chain(expiry_day, curve)
+    assert pd.Timestamp("2026-10-23") not in set(out["expiry"])
+    assert out["T"].min() >= 1 / 365
+    kept = clean_chain(expiry_day, curve, min_days=0)
+    first = kept[kept["expiry"] == pd.Timestamp("2026-10-23")]
+    assert not first.empty
+    assert first["T"].iloc[0] == pytest.approx(2 / (365 * 24))
+    assert out["expiry"].nunique() == kept["expiry"].nunique() - 1
+
+
 def test_arbitrage_violating_quote_is_dropped(raw_chain, curve):
     """An OTM call quoted above the stock price has no implied vol, so it can't stay."""
     bad = raw_chain.copy()

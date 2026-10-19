@@ -24,6 +24,7 @@ pytest --cov=optdesk                    # tests + coverage report
 ruff check .                            # lint
 ruff format .                           # auto-format
 streamlit run src/optdesk/app/main.py   # dashboard (from M5)
+python scripts/snapshot.py              # save today's SPY snapshot (Task Scheduler: weekdays 2:15pm Central)
 ```
 
 ## Conventions
@@ -60,22 +61,25 @@ data/plots/       gitignored, HTML output of python -m optdesk.surface.plot
   implied vol (Newton with Brent fallback, NaN outside no-arb bounds); CRR binomial with
   American exercise. Tests: Hull values, put-call parity (Hypothesis), every Greek vs finite
   difference, price bounds, IV round-trip, binomial converges to BS, American put >= European.
-- [ ] **M2 Data** (code complete, live test pending): fetch chain (yfinance), clean (drop zero
+- [x] **M2 Data**: fetch chain (yfinance), clean (drop zero
   bids, crossed/wide/stale quotes; mid; T; forward from parity; IV), Parquet snapshots. Tests
   use a fixture chain plus a mocked yfinance.
   - [x] Code, offline tests, README section, study notes (merged to main).
-  - [ ] Live-fetch test on Monday 2026-10-19 during market hours (9:30am–4pm New York):
-    `python -m optdesk.data.fetch SPY --max-expiries 6`. Check that the snapshot saves, most
-    quotes survive cleaning, forwards are near spot, and ATM vols look sensible.
-- [ ] **M3 Surface** (code complete and merged, live fit pending): raw SVI fit per expiry
+  - [x] Live-fetch test on Monday 2026-10-19 at 3:40pm New York (M7, merged): 6-expiry
+    snapshot in `data/snapshots/`, full chain (32 expiries) in `data/snapshots_full/`. Fix:
+    same-day (0DTE) expiries are now dropped (`clean_chain(min_days=1)`). Daily job:
+    `scripts/snapshot.py`.
+- [x] **M3 Surface**: raw SVI fit per expiry
   with parameter bounds; butterfly check (Gatheral g(k) >= 0) and calendar check (w
   non-decreasing in T); Plotly 3D surface + smiles; de-Americanizing for SPY (early-exercise
   premium stripped on a CRR tree in `clean_chain(american=True)`); synthetic SSVI chain
   (`surface/synthetic.py`) as the answer key. Tests: parameter recovery, Axel Vogt arbitrage
   example flagged, crossed slices flagged.
   - [x] Code, tests, README section, study notes (sections 9-12) (merged to main).
-  - [ ] Fit Monday's live snapshot: `python -m optdesk.surface.plot --ticker SPY --date
-    2026-10-19`. Check RMSE is small, the arbitrage flags, and that the smiles look sensible.
+  - [x] Fit Monday's live snapshot (M7, merged): RMSE 0.05-0.23 vol points; every
+    butterfly flag is in the extrapolated call wing; 6 calendar crossings touch the quoted
+    range at its edge (0.02-0.65 vol points; independent per-slice fits). PNGs in
+    `docs/images/live/`.
 - [x] **M4a Hedging sim:** GBM (exact) and Heston (full-truncation Euler) paths; delta-hedge
   P&L with transaction costs. Tests: theoretical moments, martingale property, P&L std shrinks
   as 1/sqrt(rebalances), costs reduce P&L, wrong-vol P&L sign. README section, study notes
@@ -89,10 +93,9 @@ data/plots/       gitignored, HTML output of python -m optdesk.surface.plot
     by default). Study + charts (`python -m optdesk.sim.mm_plot`), README section, study
     notes (sections 16-18).
   - [x] Merged to main.
-  - [ ] **Results are on the synthetic SSVI surface only.** Every number in the README, the
-    study notes (section 18) and `docs/images/mm_*.png` comes from the synthetic surface. Rerun
-    on live data once Monday's snapshot is fitted (M3 live fit), compare, and update the docs:
-    `python -m optdesk.sim.mm_plot --ticker SPY --date 2026-10-19 --out data/plots`.
+  - [x] Rerun on live data (M7): README results are live, synthetic kept as the validation
+    baseline (`docs/images/` = synthetic, `docs/images/live/` = live).
+  - [ ] Study notes (sections 13-18) still quote the synthetic numbers only.
 - [x] **M5 App** (merged to main): Streamlit tabs
   Surface, Hedging simulator (adjustable parameters), Market maker, Portfolio Greeks, on a
   swappable market (`surface/market.py`: synthetic by default, saved snapshots appear in the
@@ -111,5 +114,11 @@ data/plots/       gitignored, HTML output of python -m optdesk.surface.plot
     `tests/conftest.py` blocks all non-loopback network for every test. Badge in README.
     Merged to main.
   - [ ] Coverage badge, talking-points doc.
+- [x] **M7 Live data** (merged to main): live SPY snapshot 2026-10-19 (full chain in
+  `data/snapshots_full/`, gitignored); 0DTE expiries dropped in cleaning; hedging study takes
+  `--ticker/--date` (`HedgeSetup`); `scripts/snapshot.py` scheduled in Windows Task Scheduler
+  ("optdesk SPY snapshot") weekdays 2:15pm Central = 3:15pm New York. README results on live
+  data; known limitation: calendar crossings at the edge of the quoted range between
+  close expiries (per-slice SVI), fix would be a joint SSVI / calendar-constrained fit.
 
 Each milestone is done when: tests green, `ruff check .` clean, README section written, committed.

@@ -13,89 +13,125 @@ is unit-tested against a known answer (textbook values, no-arbitrage identities,
 differences, theoretical moments): over 400 tests, all offline, run by GitHub Actions on
 every push together with `ruff`.
 
-> **Status:** every result below is on a **synthetic SPY market**: a known, arbitrage-free
-> SSVI surface run through the real cleaning and fitting pipeline, so each number can be
-> checked against the truth. The first live SPY snapshot is scheduled for Monday 2026-10-19,
-> after which the surface and market-maker results will be rerun on real quotes.
+> **Data:** the results below are on **live SPY quotes**: the full option chain (32 expiries,
+> 10,314 quotes) downloaded at 3:40pm New York on Monday 2026-10-19, cleaned, de-Americanized
+> and fitted. Each section ends with a **validation baseline**: the same study on a synthetic
+> SPY market built from a known, arbitrage-free SSVI surface, where every number can be
+> checked against the truth. New snapshots are saved every weekday at 2:15pm Central
+> (3:15pm New York) by `scripts/snapshot.py`.
 
 ## Results
 
 ### 1. Volatility surface
 
-![Implied volatility surface](docs/images/surface.png)
+![Implied volatility surface, live SPY](docs/images/live/surface_spy_2026-10-19_full.png)
 
-- **Fit quality:** SVI fitted per expiry to 649 cleaned quotes across 8 expiries (7 days to
-  14 months). RMSE is **0.01–0.04 vol points** per expiry. With bid-ask noise and American
-  early exercise in the prices, every fitted smile stays within **0.1 vol points** of the true
-  surface.
-- **No arbitrage:** every slice passes the butterfly check (Gatheral's `g(k) ≥ 0`, minimum
-  0.25) and the calendar check (total variance rising with expiry at every strike).
-- **American exercise matters:** SPY options are American. Treating them as European biases a
-  1-year near-the-money put's implied vol up by **~0.6 vol points** and the parity forward
-  down by **~38bp**. The cleaner strips the early-exercise premium on a binomial tree first,
-  which recovers the true forward to **0.5bp**.
+*8 of the 31 fitted expiries (a week to 2.3 years), strikes within −6 to +3 ATM standard
+deviations; the interactive HTML from `python -m optdesk.surface.plot` shows them all.*
+
+- **Cleaning:** 10,314 raw quotes → **4,296** clean out-of-the-money quotes, one per strike,
+  across **31 expiries** (1 day to 2.3 years); same-day (0DTE) options are dropped. The median
+  bid-ask spread of what's left is 1% of the mid.
+- **Fit quality:** SVI fitted per expiry. RMSE is **0.05–0.23 vol points** (median 0.15). The
+  largest single misses (median 1.4, worst 4.6 vol points) are in the deep, wide-spread wings.
+- **Term structure:** ATM vol rises from **13.5%** at 1 month to **14.2%** at 3 months,
+  **16.2%** at 1 year and **17.0%** at 2 years, with higher vols on lower strikes (put skew).
+- **Arbitrage checks:** 24 of 31 slices fail the butterfly check (Gatheral's `g(k) ≥ 0`), but
+  **every failure is beyond the highest quoted strike**, in the call wing, where SPY calls stop
+  being quoted and SVI extrapolates with no data. 15 neighbouring pairs cross the calendar
+  check. Nine of those crossings are also outside the quoted strikes. The other six touch the
+  quoted range at its edge by **0.02–0.65 vol points**, a known limitation (see below).
+
+**Validation baseline (synthetic market, [chart](docs/images/surface.png)).**
+On 649 synthetic quotes across 8 expiries the RMSE is **0.01–0.04 vol points**, every fitted
+smile stays within **0.1 vol points** of the true surface, and every slice passes both
+arbitrage checks. It also measures why de-Americanizing matters: treating SPY's American
+options as European biases a 1-year near-the-money put's vol up by **~0.6 vol points** and
+the parity forward down by **~38bp**. Stripping the early-exercise premium on a binomial tree
+recovers the true forward to **0.5bp**.
 
 ### 2. Delta hedging
 
-![Hedging frequency](docs/images/hedge_frequency.png)
+![Hedging frequency, live SPY](docs/images/live/hedge_frequency.png)
 
-A 3-month at-the-money call ($4.31 premium) bought at 20% implied vol and delta-hedged on the
-same 5,000 paths at seven frequencies:
+A 3-month call struck at today's spot ($768.35), bought and delta-hedged at the live surface's
+vol for that strike (**14.65%**; premium **$25.79**; r = 4.15%, parity-implied q = 0.68%), on
+the same 5,000 paths at seven frequencies:
 
-- **Discrete hedging leaves risk, and it falls like 1/√N.** P&L std is **$1.82** hedging
-  monthly (42% of the premium) and **$0.17** hourly (4%). The log-log slope is **−0.48**
-  (theory −0.5), and every point sits within 10% of the Derman-Kamal formula ($2.02 → $0.17).
-  The mean stays at zero at every frequency (all within 1 standard error).
-- **Hedging P&L is a bet on realized vs implied vol.** Hedged hourly at 20%, the average P&L
-  is **+$0.99** if the stock realizes 25% and **−$0.99** if it realizes 15%. That matches the
-  gamma formula `∫ ½ΓS²(σ²_realized − σ²_implied) dt` (+$0.991 / −$0.993) and the
+- **Discrete hedging leaves risk, and it falls like 1/√N.** P&L std is **$10.23** hedging
+  monthly (40% of the premium) and **$0.94** hourly (3.6%). The log-log slope is **−0.48**
+  (theory −0.5), and every point sits within 10% of the Derman-Kamal formula
+  ($11.34 → $0.93). The mean stays at zero at every frequency (all within 1 standard error).
+- **Hedging P&L is a bet on realized vs implied vol.** Hedged hourly at 14.65%, the average
+  P&L is **+$7.59** if the stock realizes 19.65% and **−$7.56** if it realizes 9.65%. That
+  matches the gamma formula `∫ ½ΓS²(σ²_realized − σ²_implied) dt` (+$7.58 / −$7.57) and the
   Black-Scholes value gap. Path by path, the formula and the P&L have a correlation of
-  0.86–0.99.
-- **It holds under stochastic vol.** On Heston paths (vol of vol 50%, spot-vol correlation
-  −0.7) the mean P&L is −$0.163 against −$0.164 from the formula, with a path-by-path
-  correlation of **0.98**.
+  0.90–0.998.
+- **It holds under stochastic vol.** On Heston paths centred on the same vol (vol of vol 50%,
+  spot-vol correlation −0.7) the mean P&L is −$1.365 against −$1.356 from the formula, with a
+  path-by-path correlation of **0.99**.
 - **Costs make hedging frequency a trade-off.** At a 5bp half-spread, going from daily to
-  hourly cuts the std from $0.43 to $0.20 but more than doubles the cost, from $0.15 to
-  **$0.36 per option (8% of premium)**.
+  hourly cuts the std from $2.41 to $1.31 but more than doubles the cost, from $1.17 to
+  **$2.76 per option (10.7% of premium)**.
 
-![Gamma P&L](docs/images/gamma_pnl.png)
+![Gamma P&L, live SPY](docs/images/live/gamma_pnl.png)
 
-More: [P&L histograms](docs/images/hedge_pnl_histograms.png),
-[transaction costs](docs/images/hedge_costs.png).
+More: [P&L histograms](docs/images/live/hedge_pnl_histograms.png),
+[transaction costs](docs/images/live/hedge_costs.png).
+
+**Validation baseline (synthetic market: spot 100, 20% vol, premium $4.31).** The same
+experiment gives P&L std **$1.82** monthly (42% of premium) and **$0.17** hourly (4%), slope
+−0.48; **±$0.99** at 25% / 15% realized against **+$0.991 / −$0.993** from the gamma formula;
+Heston −$0.163 vs −$0.164; and at 5bp a daily → hourly cost of $0.15 → $0.36 (8% of
+premium). The live run lands on the same fractions of the premium: dollar P&L scales with
+spot, and the rest depends only on vol and the hedging grid.
+[Charts](docs/images/hedge_frequency.png).
 
 ### 3. Market making
 
-![Market-making P&L attribution](docs/images/mm_attribution.png)
+![Market-making P&L attribution, live SPY](docs/images/live/mm_attribution.png)
 
-One month of making markets in 12 SPY options (2-, 3- and 6-month expiries), 1,000 paths,
-with implied vols moving 10 points a year (correlated −0.7 with spot). The two desks see the
-same market and the same customers:
+One month of making markets in 12 SPY options (2-, 3- and 6-month expiries, strikes 90–105%
+of the forward) priced off the live SVI surface, 1,000 paths, with implied vols moving 10
+points a year (correlated −0.7 with spot). The two desks see the same market and the same
+customers:
 
 | $ per month | No skew | A-S skew |
 | --- | --- | --- |
-| Spread capture | 313,491 | 314,186 |
-| Hedging | −9,885 | −9,319 |
-| Inventory | +669 | +766 |
-| **Total P&L (mean ± SE)** | **304,275 ± 1,124** | **305,633 ± 796** |
-| **Total P&L std** | **35,544** | **25,162** |
-| Inventory P&L std | 35,371 | 13,510 |
-| Average \|book vega\| ($ per vol point) | 10,367 | 2,994 |
-| Steps with a quote pulled by a risk limit | 4.5% | 0.6% |
+| Spread capture | 409,820 | 411,705 |
+| Hedging | −12,601 | −10,611 |
+| Inventory | −91 | +78 |
+| **Total P&L (mean ± SE)** | **397,128 ± 1,406** | **401,171 ± 1,080** |
+| **Total P&L std** | **44,451** | **34,158** |
+| Inventory P&L std | 40,396 | 15,737 |
+| Average \|book vega\| ($ per vol point) | 11,310 | 3,468 |
+| Steps with a quote pulled by a risk limit | 8.4% | 2.8% |
 
-- **The money is the spread.** Spread capture is ~103% of P&L (about $430 a fill over ~730
+- **The money is the spread.** Spread capture is ~103% of P&L (about $560 a fill over ~730
   fills); hedging costs take ~3% back.
-- **Skewing quotes by inventory cuts risk by 29% at no cost to the mean.** Inventory risk falls
-  by almost two thirds ($35k → $14k) because book vega mean-reverts instead of random-walking
-  into the limit. The mean is unchanged within one standard error ($305.6k vs $304.3k), and
-  the risk limits almost stop binding.
-- **There is a frontier.** A little risk aversion slightly *raises* the mean; past
-  `γ ≈ 5×10⁻⁵` the risk stops falling (~$24k) and spread capture drops ($301k at
-  `γ = 2×10⁻⁴`). What's left is gamma and smile risk that a vega-only skew can't see.
+- **Skewing quotes by inventory cuts risk by 23% without lowering the mean.** Inventory risk
+  falls by 61% ($40k → $16k) because book vega mean-reverts instead of random-walking into
+  the limit. The mean is slightly higher ($401.2k vs $397.1k), and the risk limits bind a
+  third as often.
+- **There is a frontier.** A little risk aversion raises the mean (peak $408k at
+  `γ = 10⁻⁵`); past `γ ≈ 5×10⁻⁵` the risk stops falling much (~$33–35k) and spread capture
+  drops ($388k at `γ = 2×10⁻⁴`). What's left is gamma and smile risk that a vega-only skew
+  can't see.
 
-![Inventory](docs/images/mm_inventory.png)
+![Inventory, live SPY](docs/images/live/mm_inventory.png)
 
-More: [one simulated month](docs/images/mm_path.png),
-[quote skew and the risk-aversion frontier](docs/images/mm_frontier.png).
+More: [one simulated month](docs/images/live/mm_path.png),
+[quote skew and the risk-aversion frontier](docs/images/live/mm_frontier.png).
+
+**Validation baseline (synthetic market, spot 580).** Spread capture $314k, total
+**$305.6k ± 0.8k** with skew vs $304.3k without; skew cuts the total std by **29%**
+($35.5k → $25.2k) and inventory std by 62%; risk limits bind 0.6% vs 4.5% of the time.
+Live spread capture is 1.31 times the synthetic, about the ratio of the spots
+(768 / 580 = 1.32), because option premiums and hence dollar spreads scale with spot.
+The P&L std scales about the same way (34.2k / 25.2k = 1.36). The risk limits bind more often
+live (2.8% vs 0.6%) because they are fixed in dollars while each contract's vega and gamma
+grow with spot.
+[Charts](docs/images/mm_attribution.png).
 
 ## Install and run
 
@@ -114,15 +150,41 @@ Then:
 
 ```powershell
 streamlit run src/optdesk/app/main.py                     # the dashboard, in your browser
+python scripts/snapshot.py                                # save today's full SPY chain (market hours)
 python -m optdesk.surface.plot --png docs/images/surface.png  # fit the surface, write the plots
 python -m optdesk.sim.plot                                # hedging study: tables + charts
 python -m optdesk.sim.mm_plot                             # market-making study: tables + charts
-python -m optdesk.data.fetch SPY --max-expiries 6         # save today's SPY chain (market hours)
 ```
 
-Every study is seeded, so these commands reproduce the numbers above exactly. After fetching a
-snapshot, add `--ticker SPY --date YYYY-MM-DD` to the surface and market-maker commands, or
-pick the snapshot in the dashboard's sidebar.
+Without options, the last three run on the synthetic market (the validation baselines). Add
+`--ticker SPY --date YYYY-MM-DD` to run them on a saved snapshot, or pick the snapshot in the
+dashboard's sidebar. Every study is seeded, so the same snapshot gives the same numbers. The
+live results above came from:
+
+```powershell
+python -m optdesk.surface.plot --ticker SPY --date 2026-10-19 --root data/snapshots_full --png docs/images/live/surface_spy_2026-10-19_full.png
+python -m optdesk.sim.plot     --ticker SPY --date 2026-10-19 --root data/snapshots_full --out docs/images/live
+python -m optdesk.sim.mm_plot  --ticker SPY --date 2026-10-19 --root data/snapshots_full --out docs/images/live
+```
+
+Market data isn't committed (snapshots are regenerable and bulky), so reproducing those exact
+numbers needs that day's snapshot file. Any other day's snapshot runs the same way.
+
+**Daily snapshots.** `scripts/snapshot.py` saves every expiry of SPY to
+`data/snapshots/SPY/{date}.parquet` and logs to `data/logs/snapshot.log`. It skips market
+holidays (no trades that day) and won't overwrite a day already saved. On this machine Windows
+Task Scheduler runs it **weekdays at 2:15pm Central (3:15pm New York)**, 45 minutes before the
+close, while quotes are still live. To set that up:
+
+```powershell
+$repo = (Get-Location).Path   # run from the repo folder
+$action = New-ScheduledTaskAction -Execute "$repo\.venv\Scripts\python.exe" -Argument "scripts\snapshot.py" -WorkingDirectory $repo
+$trigger = New-ScheduledTaskTrigger -Weekly -DaysOfWeek Monday,Tuesday,Wednesday,Thursday,Friday -At "2:15PM"
+$settings = New-ScheduledTaskSettingsSet -ExecutionTimeLimit (New-TimeSpan -Minutes 30)
+Register-ScheduledTask -TaskName "optdesk SPY snapshot" -Action $action -Trigger $trigger -Settings $settings
+```
+
+The time is the PC's local time, so set it to whatever is 3:15pm in New York.
 
 ## Assumptions and limitations
 
@@ -137,13 +199,26 @@ pick the snapshot in the dashboard's sidebar.
 - yfinance quotes are free, delayed about 15 minutes and come without quote timestamps, so the
   cleaner can only filter stale quotes by last-trade time. It's fine for end-of-day
   surfaces but not for intraday trading.
-- The live-fetch path is tested only against a mocked yfinance; the first real run is pending
-  (2026-10-19).
+- Discounting uses the Treasury curve, but options finance at a slightly higher rate (the
+  rate implied by box spreads). So the dividend yield backed out of the parity forward comes
+  out low: 0.68% at 3 months (the `q` in the hedging study) and lower on longer expiries,
+  against SPY's ~1.2%. Forwards near
+  the money barely depend on the rate, so the surface is unaffected. The carry fed to the tree
+  for de-Americanizing is slightly off, though.
+- The snapshot job runs only while the PC is on and awake; a missed day isn't retried, since a
+  run after the close would save mostly zero bids.
 
 **Volatility surface**
 - Raw SVI is fitted one expiry at a time. Arbitrage is *checked and reported*, not
-  *enforced*, so a noisy live chain can produce a flagged slice that needs refitting or
-  dropping. A joint SSVI fit would rule out calendar arbitrage by construction.
+  *enforced*. On the live SPY chain this shows up in two ways:
+  - **Butterfly flags in the call wing.** Every failure is beyond the highest quoted strike,
+    where SVI extrapolates with no data.
+  - **Calendar crossings at the edge of the quoted range.** Six pairs of expiries a few days to
+    two weeks apart (e.g. the Jun 17 monthly and the Jun 30 quarterly) cross by 0.02–0.65 vol
+    points at the edge of the strikes they share. Each slice fits its own quotes well. They
+    just aren't fitted together, so nothing stops two close slices from disagreeing where one
+    has few strikes. A joint fit (SSVI, or SVI with calendar constraints) would rule this out
+    by construction.
 - Between expiries, total variance is interpolated linearly in `T`, and SVI's wings are
   extrapolated beyond the quoted strikes with no data behind them.
 
@@ -154,18 +229,21 @@ pick the snapshot in the dashboard's sidebar.
 
 **Market maker**
 - **No adverse selection.** Customers arrive at random (Poisson) and are uninformed: their
-  trades don't predict the next move. Real flow is partly informed, so the ~$305k a month of
+  trades don't predict the next move. Real flow is partly informed, so the ~$410k a month of
   spread capture is an upper bound, not an estimate of a real desk's revenue.
-- The desk's theo is the *true* surface. A real desk's theo has fitting error, and quoting off
-  a wrong theo leaks edge to customers.
+- The desk's theo is the same surface the simulated market is built on (the live SVI fit, or
+  the synthetic truth). A real desk's theo has fitting error against where the market will
+  actually trade, and quoting off a wrong theo leaks edge to customers.
 - The whole surface moves in parallel by a single vol factor, with fixed smile shape. Skew
   and term-structure moves aren't simulated, which is why a vega-only skew looks so effective.
 - Fills are in fixed sizes at the quoted price, with no competing market makers and no
   queue position.
 
 **Results**
-- All published numbers come from the synthetic SSVI surface (see Status above). The
-  synthetic chain is built to look like SPY, but it is not SPY.
+- The live results are one snapshot (Monday 2026-10-19, 3:40pm New York). One afternoon's
+  surface is a single draw: a different day, especially a stressed one, will give a different
+  skew and different numbers. The simulators still generate the *future* paths (GBM, Heston,
+  a parallel vol factor), so only today's surface is live, not the dynamics.
 
 ## Project layout
 
@@ -177,7 +255,9 @@ src/optdesk/
   sim/      paths.py, hedging.py, plot.py, market_maker.py, mm_plot.py, lab.py
   app/      main.py, views/, charts.py
 tests/      mirrors src/optdesk/; fixtures/ holds a saved chain for offline tests
-docs/       STUDY_NOTES.md (theory, formulas, interview questions), images/
+scripts/    snapshot.py (the daily snapshot job)
+docs/       STUDY_NOTES.md (theory, formulas, interview questions), images/ (synthetic
+            baselines), images/live/ (live SPY results)
 ```
 
 The reasoning behind each model choice is in the module docstrings and in
