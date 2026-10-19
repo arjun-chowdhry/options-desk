@@ -79,15 +79,18 @@ data/plots/       gitignored, HTML output of python -m optdesk.surface.plot
   P&L with transaction costs. Tests: theoretical moments, martingale property, P&L std shrinks
   as 1/sqrt(rebalances), costs reduce P&L, wrong-vol P&L sign. README section, study notes
   (sections 13-15), charts in `docs/images/` (`python -m optdesk.sim.plot`). Merged to main.
-- [ ] **M4b Market maker** (code complete on branch `m4b-marketmaker`, NOT merged; awaiting
-  Arjun's review): Avellaneda-Stoikov reservation price and spread, Poisson fills,
+- [x] **M4b Market maker** (merged to main): Avellaneda-Stoikov reservation price and spread,
+  Poisson fills,
   inventory limits. Tests: symmetric quotes at zero inventory, skew direction, spread grows with
   gamma and sigma, reproducibility, skewing reduces inventory variance.
   - [x] A-S in vol space (skew by book vega), delta hedging, pre-trade vega/gamma limits, P&L
     split into spread / hedging / inventory; swappable surface (`surface/source.py`, synthetic
     by default). Study + charts (`python -m optdesk.sim.mm_plot`), README section, study
     notes (sections 16-18).
-  - [ ] Merge to main after review. After Monday's snapshot, optionally rerun on the live fit:
+  - [x] Merged to main.
+  - [ ] **Results are on the synthetic SSVI surface only.** Every number in the README, the
+    study notes (section 18) and `docs/images/mm_*.png` comes from the synthetic surface. Rerun
+    on live data once Monday's snapshot is fitted (M3 live fit), compare, and update the docs:
     `python -m optdesk.sim.mm_plot --ticker SPY --date 2026-10-19 --out data/plots`.
 - [ ] **M5 App:** Streamlit pages: Pricer, Chain & IV, Surface, Hedging, Market Maker. Smoke
   tests with `streamlit.testing.v1.AppTest`.
