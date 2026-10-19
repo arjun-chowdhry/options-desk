@@ -93,13 +93,13 @@ data/plots/       gitignored, HTML output of python -m optdesk.surface.plot
     study notes (section 18) and `docs/images/mm_*.png` comes from the synthetic surface. Rerun
     on live data once Monday's snapshot is fitted (M3 live fit), compare, and update the docs:
     `python -m optdesk.sim.mm_plot --ticker SPY --date 2026-10-19 --out data/plots`.
-- [ ] **M5 App** (code complete on branch `m5-dashboard`, not merged yet): Streamlit tabs
+- [x] **M5 App** (merged to main): Streamlit tabs
   Surface, Hedging simulator (adjustable parameters), Market maker, Portfolio Greeks, on a
   swappable market (`surface/market.py`: synthetic by default, saved snapshots appear in the
   sidebar dropdown). Math lives in `pricing/portfolio.py` and `sim/lab.py`. Smoke tests with
   `streamlit.testing.v1.AppTest`. README section, study notes (sections 19-20).
-  - [x] Code, tests, README section, study notes (committed on `m5-dashboard`).
-  - [ ] Review in the browser, then merge to main.
+  - [x] Code, tests, README section, study notes.
+  - [x] Merged to main. Run: `streamlit run src/optdesk/app/main.py`.
 - [ ] **M6 Polish:** README with screenshots, design decisions, CI (GitHub Actions: pytest +
   ruff), coverage badge, talking-points doc.
 
