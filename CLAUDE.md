@@ -42,11 +42,12 @@ streamlit run src/optdesk/app/main.py   # dashboard (from M5)
 
 ```
 src/optdesk/
-  pricing/  black_scholes.py, greeks.py, implied_vol.py, binomial.py
+  pricing/  black_scholes.py, greeks.py, implied_vol.py, binomial.py, portfolio.py
   data/     fetch.py, clean.py, rates.py, store.py
-  surface/  svi.py, arbitrage.py, plot.py, synthetic.py, source.py (swappable VolSurface)
-  sim/      paths.py, hedging.py, plot.py, market_maker.py, mm_plot.py
-  app/      main.py, pages/
+  surface/  svi.py, arbitrage.py, plot.py, synthetic.py, source.py (swappable VolSurface),
+            market.py (MarketData bundle: synthetic or snapshot, the app's data source)
+  sim/      paths.py, hedging.py, plot.py, market_maker.py, mm_plot.py, lab.py (app experiments)
+  app/      main.py (sidebar + tabs), views/ (one file per tab), charts.py (Plotly figures)
 tests/      mirrors the above; fixtures/ holds a saved chain for offline tests
 data/snapshots/   gitignored, {TICKER}/{YYYY-MM-DD}.parquet
 data/plots/       gitignored, HTML output of python -m optdesk.surface.plot
@@ -92,8 +93,13 @@ data/plots/       gitignored, HTML output of python -m optdesk.surface.plot
     study notes (section 18) and `docs/images/mm_*.png` comes from the synthetic surface. Rerun
     on live data once Monday's snapshot is fitted (M3 live fit), compare, and update the docs:
     `python -m optdesk.sim.mm_plot --ticker SPY --date 2026-10-19 --out data/plots`.
-- [ ] **M5 App:** Streamlit pages: Pricer, Chain & IV, Surface, Hedging, Market Maker. Smoke
-  tests with `streamlit.testing.v1.AppTest`.
+- [ ] **M5 App** (code complete on branch `m5-dashboard`, not merged yet): Streamlit tabs
+  Surface, Hedging simulator (adjustable parameters), Market maker, Portfolio Greeks, on a
+  swappable market (`surface/market.py`: synthetic by default, saved snapshots appear in the
+  sidebar dropdown). Math lives in `pricing/portfolio.py` and `sim/lab.py`. Smoke tests with
+  `streamlit.testing.v1.AppTest`. README section, study notes (sections 19-20).
+  - [x] Code, tests, README section, study notes (committed on `m5-dashboard`).
+  - [ ] Review in the browser, then merge to main.
 - [ ] **M6 Polish:** README with screenshots, design decisions, CI (GitHub Actions: pytest +
   ruff), coverage badge, talking-points doc.
 

@@ -410,18 +410,13 @@ def _print_tables(study: MMStudy) -> None:
 
 def _snapshot_surface(args) -> tuple[VolSurface, float, float, float, str]:
     """A fitted SVI surface from a saved snapshot, with its spot, rate and implied dividend."""
-    from optdesk.data.clean import clean_chain
-    from optdesk.data.store import DEFAULT_ROOT, load_snapshot
-    from optdesk.surface.source import fitted_surface
-    from optdesk.surface.svi import fit_chain
+    from optdesk.data.store import DEFAULT_ROOT
+    from optdesk.surface.market import snapshot_market
 
-    raw, curve = load_snapshot(args.ticker, args.date, args.root or DEFAULT_ROOT)
-    fits = fit_chain(clean_chain(raw, curve, american=not args.european))
-    S0 = float(raw["spot"].iloc[0])
-    row = fits.iloc[(fits["T"] - TENORS[1]).abs().argmin()]  # forward nearest 3 months
-    r = float(curve(row["T"]))
-    q = r - float(np.log(row["forward"] / S0) / row["T"])  # dividend yield implied by F
-    return fitted_surface(fits), S0, r, q, f"{args.ticker.upper()} {args.date} SVI fit"
+    m = snapshot_market(
+        args.ticker, args.date, args.root or DEFAULT_ROOT, american=not args.european
+    )
+    return m.surface, m.spot, m.r, m.q, f"{m.label} SVI fit"
 
 
 def main(argv: list[str] | None = None) -> int:
