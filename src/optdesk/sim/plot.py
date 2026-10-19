@@ -24,7 +24,26 @@ These charts are meant to sit in the README and study notes as static images. Ma
 writes PNGs with no extra software; Plotly needs kaleido and a headless Chrome to do the same.
 The interactive versions belong in the Streamlit app (M5).
 
-Command line: ``python -m optdesk.sim.plot`` (options: ``--paths``, ``--seed``, ``--out``).
+Live inputs (``--ticker SPY --date ...``)
+---------------------------------------
+The same experiment can take its market from a fitted snapshot instead (``HedgeSetup``): live
+spot (strike = spot, so still at the money), the 3-month rate and parity-implied dividend
+yield, and the hedge vol read off the fitted SVI surface at 3 months and that strike. Only
+the market changes; the grid, frequencies and cost levels stay fixed so the two runs compare
+like for like. Two things scale with the market rather than staying at fixed numbers:
+
+- *Realized vols* are the hedge vol plus -10, -5, 0, +5 and +10 points, so "realized =
+  implied" is always one of them and the wrong-vol chart stays centred.
+- *Heston* starts and mean-reverts to the hedge vol (``v0 = theta = sigma_implied^2``), so its
+  vol is random but averages out to the implied vol: the run isolates the effect of vol being
+  random, not of it being on average too high or too low.
+
+Dollar P&L scales with spot (the whole problem is homogeneous: double S and K and every
+price, hedge and P&L doubles), so at SPY's ~$770 the dollar numbers are ~7.7 times the
+spot-100 ones; compare them as a fraction of the premium.
+
+Command line: ``python -m optdesk.sim.plot`` (options: ``--paths``, ``--seed``, ``--out``,
+and ``--ticker/--date/--root/--european`` to take the market from a fitted snapshot).
 """
 
 from __future__ import annotations
@@ -32,6 +51,7 @@ from __future__ import annotations
 import argparse
 from dataclasses import dataclass
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import matplotlib
 import matplotlib.pyplot as plt
@@ -40,7 +60,7 @@ import pandas as pd
 from matplotlib.figure import Figure
 from matplotlib.ticker import FixedLocator, FuncFormatter, NullLocator
 
-from optdesk.pricing.black_scholes import bs_price
+from optdesk.pricing.black_scholes import bs_price, forward_price
 from optdesk.sim.hedging import (
     delta_hedge,
     discrete_hedging_std,
@@ -49,9 +69,13 @@ from optdesk.sim.hedging import (
 )
 from optdesk.sim.paths import gbm_paths, heston_paths
 
+if TYPE_CHECKING:
+    from optdesk.surface.market import MarketData
+
 matplotlib.use("Agg")  # draw to files only, never open a window (works on servers and in tests)
 
 __all__ = [
+    "HedgeSetup",
     "Study",
     "costs_figure",
     "frequency_figure",
@@ -76,10 +100,51 @@ FREQUENCIES = {  # label -> grid steps between hedges
     "hourly": 1,
 }
 HISTOGRAM_FREQUENCIES = ["monthly", "weekly", "daily", "hourly"]
-REALIZED_VOLS = [0.10, 0.15, 0.20, 0.25, 0.30]
-SCATTER_VOL = 0.25  # realized vol for the path-by-path scatter
-HESTON = {"v0": 0.04, "kappa": 2.0, "theta": 0.04, "xi": 0.5, "rho": -0.7}  # 20% long-run vol
+REALIZED_OFFSETS = [-0.10, -0.05, 0.0, 0.05, 0.10]  # realized vol minus the hedge vol
+SCATTER_OFFSET = 0.05  # realized vol for the path-by-path scatter: hedge vol + 5 points
+HESTON = {"kappa": 2.0, "xi": 0.5, "rho": -0.7}  # v0 = theta = hedge vol squared
 COSTS_BP = [0, 2, 5]  # half-spread in basis points
+
+
+@dataclass(frozen=True)
+class HedgeSetup:
+    """The market the hedged option lives in. Defaults: SPY-like, spot normalized to 100.
+
+    ``from_market`` fills it from a fitted snapshot instead (see "Live inputs" above).
+    """
+
+    S0: float = S0
+    K: float = K
+    r: float = R
+    q: float = Q
+    hedge_vol: float = HEDGE_VOL
+    label: str = "SPY-like stock, spot 100"
+
+    @property
+    def realized_vols(self) -> list[float]:
+        """Realized vols for the wrong-vol experiment (rounded so the fair one is exact)."""
+        return [round(self.hedge_vol + d, 4) for d in REALIZED_OFFSETS]
+
+    @property
+    def scatter_vol(self) -> float:
+        return round(self.hedge_vol + SCATTER_OFFSET, 4)
+
+    @property
+    def heston(self) -> dict[str, float]:
+        return {**HESTON, "v0": self.hedge_vol**2, "theta": self.hedge_vol**2}
+
+    @property
+    def premium(self) -> float:
+        return float(bs_price(self.S0, self.K, T, self.r, self.hedge_vol, self.q))
+
+    @classmethod
+    def from_market(cls, market: MarketData) -> HedgeSetup:
+        """ATM-spot call at the fitted surface's 3-month vol, with the snapshot's spot, r and q."""
+        S = market.spot
+        k = float(np.log(S / forward_price(S, T, market.r, market.q)))
+        vol = float(market.surface.implied_vol(k, T))
+        return cls(S, S, market.r, market.q, vol, f"{market.label}, spot {S:.2f}")
+
 
 # --- Style (project palette: blue = model/formula, orange = simulation/market) -----------------
 BLUE, ORANGE, AQUA = "#2a78d6", "#eb6834", "#1baf7a"
@@ -117,23 +182,25 @@ class Study:
     scatter: dict[str, tuple[np.ndarray, np.ndarray]]  # label -> (gamma formula, P&L) per path
     costs: pd.DataFrame  # one row per (cost, frequency)
     n_paths: int
+    setup: HedgeSetup = HedgeSetup()
 
 
-def run_study(n_paths: int = 5_000, seed: int = 2026) -> Study:
+def run_study(n_paths: int = 5_000, seed: int = 2026, setup: HedgeSetup | None = None) -> Study:
     """Run every experiment of the M4a study on ``n_paths`` paths (reproducible from ``seed``)."""
+    m = setup if setup is not None else HedgeSetup()
+    S0, K, R, Q, vol = m.S0, m.K, m.r, m.q, m.hedge_vol
     rng = np.random.default_rng(seed)
-    fair = gbm_paths(S0, R - Q, HEDGE_VOL, T, N_STEPS, n_paths, rng)
-    sweep = frequency_sweep(fair, K, R, HEDGE_VOL, Q, frequencies=FREQUENCIES)
+    fair = gbm_paths(S0, R - Q, vol, T, N_STEPS, n_paths, rng)
+    sweep = frequency_sweep(fair, K, R, vol, Q, frequencies=FREQUENCIES)
     sweep["derman_kamal"] = [
-        discrete_hedging_std(S0, K, T, R, HEDGE_VOL, Q, n) for n in sweep["n_rebalances"]
+        discrete_hedging_std(S0, K, T, R, vol, Q, n) for n in sweep["n_rebalances"]
     ]
 
     rows, scatter = [], {}
-    premium = float(bs_price(S0, K, T, R, HEDGE_VOL, Q))
-    for realized in REALIZED_VOLS:
+    for realized in m.realized_vols:
         paths = gbm_paths(S0, R - Q, realized, T, N_STEPS, n_paths, rng)
-        pnl = delta_hedge(paths, K, R, HEDGE_VOL, Q).pnl
-        formula = gamma_pnl(paths, K, R, HEDGE_VOL, Q)
+        pnl = delta_hedge(paths, K, R, vol, Q).pnl
+        formula = gamma_pnl(paths, K, R, vol, Q)
         rows.append(
             {
                 "model": "GBM",
@@ -141,17 +208,17 @@ def run_study(n_paths: int = 5_000, seed: int = 2026) -> Study:
                 "sim_mean": pnl.mean(),
                 "sim_se": pnl.std(ddof=1) / np.sqrt(n_paths),
                 "gamma_formula": formula.mean(),
-                "bs_value_gap": float(bs_price(S0, K, T, R, realized, Q)) - premium,
+                "bs_value_gap": float(bs_price(S0, K, T, R, realized, Q)) - m.premium,
                 "sim_std": pnl.std(ddof=1),
-                "path_corr": np.corrcoef(pnl, formula)[0, 1] if realized != HEDGE_VOL else np.nan,
+                "path_corr": np.corrcoef(pnl, formula)[0, 1] if realized != vol else np.nan,
             }
         )
-        if realized == SCATTER_VOL:
+        if realized == m.scatter_vol:
             scatter[f"GBM, realized {realized:.0%}"] = (formula, pnl)
 
-    paths = heston_paths(S0, mu=R - Q, T=T, n_steps=N_STEPS, n_paths=n_paths, rng=rng, **HESTON)
-    pnl = delta_hedge(paths, K, R, HEDGE_VOL, Q).pnl
-    formula = gamma_pnl(paths, K, R, HEDGE_VOL, Q)
+    paths = heston_paths(S0, mu=R - Q, T=T, n_steps=N_STEPS, n_paths=n_paths, rng=rng, **m.heston)
+    pnl = delta_hedge(paths, K, R, vol, Q).pnl
+    formula = gamma_pnl(paths, K, R, vol, Q)
     rows.append(
         {
             "model": "Heston",
@@ -168,7 +235,7 @@ def run_study(n_paths: int = 5_000, seed: int = 2026) -> Study:
 
     cost_tables = []
     for bp in COSTS_BP:
-        table = frequency_sweep(fair, K, R, HEDGE_VOL, Q, frequencies=FREQUENCIES, cost=bp / 1e4)
+        table = frequency_sweep(fair, K, R, vol, Q, frequencies=FREQUENCIES, cost=bp / 1e4)
         cost_tables.append(table.drop(columns="pnl").assign(cost_bp=bp))
     return Study(
         sweep=sweep,
@@ -176,6 +243,7 @@ def run_study(n_paths: int = 5_000, seed: int = 2026) -> Study:
         scatter=scatter,
         costs=pd.concat(cost_tables, ignore_index=True),
         n_paths=n_paths,
+        setup=m,
     )
 
 
@@ -191,7 +259,7 @@ def _log_x(ax, sweep: pd.DataFrame) -> None:
 def _dollar_log_y(ax) -> None:
     """Log y axis labelled in plain dollars (0.1, 0.2, 0.5, 1, 2) instead of powers of ten."""
     ax.set_yscale("log")
-    ax.yaxis.set_major_locator(FixedLocator([0.02, 0.05, 0.1, 0.2, 0.5, 1, 2, 5]))
+    ax.yaxis.set_major_locator(FixedLocator([0.02, 0.05, 0.1, 0.2, 0.5, 1, 2, 5, 10, 20, 50]))
     ax.yaxis.set_major_formatter(FuncFormatter(lambda y, _: f"${y:g}"))
     ax.yaxis.set_minor_locator(NullLocator())
 
@@ -246,8 +314,9 @@ def frequency_figure(study: Study) -> Figure:
         right.set_title("Mean stays at zero")
         right.legend(loc="upper right")
         fig.suptitle(
-            f"Delta-hedging a 3-month ATM call, realized vol = implied vol = {HEDGE_VOL:.0%}, "
-            f"no costs ({study.n_paths:,} paths)",
+            f"Delta-hedging a 3-month ATM call, realized vol = implied vol = "
+            f"{study.setup.hedge_vol:.1%}, no costs ({study.n_paths:,} paths, "
+            f"{study.setup.label})",
             x=0.01,
             ha="left",
             color=INK,
@@ -316,8 +385,8 @@ def gamma_figure(study: Study) -> Figure:
             capsize=0,
             label="Simulated mean P&L ± 2 SE",
         )
-        ax.axvline(100 * HEDGE_VOL, color=GRID, lw=1, ls="--")
-        ax.set_xlabel(f"Realized vol (%), implied = {HEDGE_VOL:.0%}")
+        ax.axvline(100 * study.setup.hedge_vol, color=GRID, lw=1, ls="--")
+        ax.set_xlabel(f"Realized vol (%), implied = {study.setup.hedge_vol:.1%}")
         ax.set_ylabel("Mean hedged P&L ($), hourly hedging")
         ax.set_title("Long gamma: make realized − implied")
         ax.legend(loc="upper left")
@@ -403,16 +472,20 @@ def costs_figure(study: Study) -> Figure:
 
 def _print_tables(study: Study) -> None:
     fmt = {"float_format": lambda x: f"{x:.4f}", "index": False}
-    premium = float(bs_price(S0, K, T, R, HEDGE_VOL, Q))
-    print(f"Option: 3-month ATM call, S=K={S0:.0f}, r={R:.0%}, q={Q:.1%}, premium ${premium:.4f}")
+    m = study.setup
+    print(f"Market: {m.label}")
+    print(
+        f"Option: 3-month ATM call, S=K={m.S0:.2f}, r={m.r:.2%}, q={m.q:.2%}, "
+        f"vol {m.hedge_vol:.2%}, premium ${m.premium:.4f}"
+    )
     print(f"Paths: {study.n_paths:,}, grid {DAYS} days x {MARKS_PER_DAY} hourly marks\n")
-    print("1) Realized vol = implied vol = 20%, no costs")
+    print(f"1) Realized vol = implied vol = {m.hedge_vol:.2%}, no costs")
     cols = ["frequency", "n_rebalances", "mean", "se", "std", "derman_kamal"]
     t = study.sweep[cols].assign(mean_over_se=study.sweep["mean"] / study.sweep["se"])
     print(t.to_string(**fmt))
     slope = np.polyfit(np.log(t["n_rebalances"]), np.log(t["std"]), 1)[0]
     print(f"log-log slope of std vs N: {slope:.3f} (theory -0.5)\n")
-    print("2) Realized vol != implied vol (hedged hourly at 20%)")
+    print(f"2) Realized vol != implied vol (hedged hourly at {m.hedge_vol:.2%})")
     print(study.wrong_vol.to_string(**fmt))
     print("\n3) Transaction costs (fair vol)")
     cols = ["cost_bp", "frequency", "n_rebalances", "mean", "std", "mean_cost"]
@@ -425,9 +498,24 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--paths", type=int, default=5_000, help="number of simulated paths")
     parser.add_argument("--seed", type=int, default=2026, help="random seed")
     parser.add_argument("--out", type=Path, default=Path("docs/images"), help="output folder")
+    parser.add_argument("--ticker", help="take the market from a fitted snapshot (default: 100)")
+    parser.add_argument("--date", help="snapshot date YYYY-MM-DD (with --ticker)")
+    parser.add_argument("--european", action="store_true", help="options are European (^SPX)")
+    parser.add_argument("--root", type=Path, default=None, help="snapshot folder (with --ticker)")
     args = parser.parse_args(argv)
 
-    study = run_study(args.paths, args.seed)
+    setup = None
+    if args.ticker:
+        from optdesk.data.store import DEFAULT_ROOT
+        from optdesk.surface.market import snapshot_market
+
+        if not args.date:
+            parser.error("--ticker needs --date")
+        market = snapshot_market(
+            args.ticker, args.date, args.root or DEFAULT_ROOT, american=not args.european
+        )
+        setup = HedgeSetup.from_market(market)
+    study = run_study(args.paths, args.seed, setup)
     _print_tables(study)
     args.out.mkdir(parents=True, exist_ok=True)
     figures = {

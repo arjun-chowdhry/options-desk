@@ -36,7 +36,7 @@ import numpy as np
 import pandas as pd
 import yfinance as yf
 
-from optdesk.data.clean import clean_chain
+from optdesk.data.clean import clean_chain, quote_flags
 from optdesk.data.rates import TREASURY_TENORS, RateCurve, treasury_curve
 from optdesk.data.store import DEFAULT_ROOT, save_snapshot
 
@@ -153,8 +153,16 @@ def main(argv: list[str] | None = None) -> int:
     path = save_snapshot(chain, curve, args.root, overwrite=args.overwrite)
     print(f"saved {len(chain)} raw quotes to {path}")
 
+    flags = quote_flags(chain)
+    print(
+        "flagged by each filter (a quote can fail several): "
+        + ", ".join(f"{name} {count}" for name, count in flags.sum().items())
+    )
     clean = clean_chain(chain, curve, american=not args.european)
-    print(f"{len(clean)} quotes survive cleaning")
+    print(
+        f"{len(clean)} quotes survive cleaning (one OTM option per strike, so at most about "
+        f"half of the {(~flags.any(axis=1)).sum()} that pass the filters)"
+    )
     for expiry, group in clean.groupby("expiry"):
         atm = group.iloc[(group["k"].abs()).argmin()]
         print(

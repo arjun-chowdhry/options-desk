@@ -5,7 +5,8 @@ The steps, in order
 1. **Drop bad quotes** (``quote_flags``): zero bids, crossed markets, spreads that are too
    wide, and stale contracts. Each is a quote whose mid doesn't tell us the option's value.
 2. **Mid price and time to expiry.** We value each option at the mid of bid and ask, and
-   measure ``T`` in years (ACT/365) to 4pm New York time on the expiry date.
+   measure ``T`` in years (ACT/365) to 4pm New York time on the expiry date. Expiries less
+   than ``min_days`` away (by default: same-day, "0DTE" options) are dropped.
 3. **Forward per expiry from put-call parity** (``parity_forward``).
 4. **Keep only out-of-the-money options**: puts struck below the forward, calls at or above it.
 5. **Implied vol and log-moneyness** ``k = ln(K / F)``, the coordinates the M3 surface uses.
@@ -27,6 +28,13 @@ Why these filters
 - *Stale (no trade in ``max_stale_days``):* a contract nobody has traded in days is usually
   illiquid, and its quotes are more likely to be left over and out of date. Contracts with no
   trade date at all count as stale.
+- *Under a day to expiry (``min_days``):* SPY lists options expiring every weekday, so a
+  snapshot taken in the afternoon includes options with minutes left. With ``T`` that small,
+  a one-cent tick moves the implied vol by many points (on 19 Oct 2026 at 3:40pm the 0DTE
+  at-the-money put implied 25% while next-day options implied 12%). That vol says nothing
+  about the surface, and as the first point of every term structure it would trip the
+  calendar-arbitrage check. One day is the natural cut: it removes today's expiry whatever
+  time the snapshot is taken, and keeps tomorrow's.
 
 Why infer the forward instead of computing ``S e^{(r-q)T}``
 -----------------------------------------------------------
@@ -229,6 +237,7 @@ def clean_chain(
     american: bool = False,
     max_rel_spread: float = 0.5,
     max_stale_days: float | None = 5.0,
+    min_days: float = 1.0,
     n_parity_strikes: int = 5,
 ) -> pd.DataFrame:
     """Clean a raw chain from ``fetch_chain`` into OTM quotes with forward, ``k`` and implied vol.
@@ -241,14 +250,16 @@ def clean_chain(
         premium before computing forwards and vols (see the module notes). Needs the
         ``spot`` column. Leave False for European options (SPX) and the European fixture.
     max_rel_spread, max_stale_days : quote filters, see ``quote_flags``.
+    min_days : drop expiries fewer than this many calendar days (ACT/365) away; the default
+        removes same-day options (see "Why these filters"). ``0`` keeps everything unexpired.
     n_parity_strikes : how many near-the-money strikes to use for each forward.
 
     Returns
     -------
     DataFrame with ``CLEAN_COLUMNS``, sorted by expiry then strike: one OTM option per strike.
-    Also dropped: expiries already past; expiries with no strike quoted on both the call and
-    the put side after filtering (no forward is possible, so this warns); and quotes with no
-    implied vol (price outside the no-arbitrage bounds).
+    Also dropped: expiries already past or under ``min_days`` away; expiries with no strike
+    quoted on both the call and the put side after filtering (no forward is possible, so this
+    warns); and quotes with no implied vol (price outside the no-arbitrage bounds).
     """
     flags = quote_flags(raw, max_rel_spread=max_rel_spread, max_stale_days=max_stale_days)
     quotes = raw.loc[~flags.any(axis=1)].copy()
@@ -263,7 +274,7 @@ def clean_chain(
     quotes["mid"] = (quotes["bid"] + quotes["ask"]) / 2
     quotes["rel_spread"] = (quotes["ask"] - quotes["bid"]) / quotes["mid"]
     quotes["T"] = year_fraction(quotes["asof"], quotes["expiry"])
-    quotes = quotes[quotes["T"] > 0]
+    quotes = quotes[(quotes["T"] > 0) & (quotes["T"] >= min_days / 365)]
     quotes["r"] = curve(quotes["T"].to_numpy())
 
     forwards = {}

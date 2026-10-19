@@ -24,6 +24,7 @@ pytest --cov=optdesk                    # tests + coverage report
 ruff check .                            # lint
 ruff format .                           # auto-format
 streamlit run src/optdesk/app/main.py   # dashboard (from M5)
+python scripts/snapshot.py              # save today's SPY snapshot (Task Scheduler runs this)
 ```
 
 ## Conventions
@@ -64,9 +65,10 @@ data/plots/       gitignored, HTML output of python -m optdesk.surface.plot
   bids, crossed/wide/stale quotes; mid; T; forward from parity; IV), Parquet snapshots. Tests
   use a fixture chain plus a mocked yfinance.
   - [x] Code, offline tests, README section, study notes (merged to main).
-  - [ ] Live-fetch test on Monday 2026-10-19 during market hours (9:30am–4pm New York):
-    `python -m optdesk.data.fetch SPY --max-expiries 6`. Check that the snapshot saves, most
-    quotes survive cleaning, forwards are near spot, and ATM vols look sensible.
+  - [x] Live-fetch test on Monday 2026-10-19 at 3:40pm New York (branch `m7-live`): 6-expiry
+    snapshot in `data/snapshots/`, full chain (32 expiries) in `data/snapshots_full/`. Fix:
+    same-day (0DTE) expiries are now dropped (`clean_chain(min_days=1)`). Daily job:
+    `scripts/snapshot.py`.
 - [ ] **M3 Surface** (code complete and merged, live fit pending): raw SVI fit per expiry
   with parameter bounds; butterfly check (Gatheral g(k) >= 0) and calendar check (w
   non-decreasing in T); Plotly 3D surface + smiles; de-Americanizing for SPY (early-exercise
@@ -74,8 +76,10 @@ data/plots/       gitignored, HTML output of python -m optdesk.surface.plot
   (`surface/synthetic.py`) as the answer key. Tests: parameter recovery, Axel Vogt arbitrage
   example flagged, crossed slices flagged.
   - [x] Code, tests, README section, study notes (sections 9-12) (merged to main).
-  - [ ] Fit Monday's live snapshot: `python -m optdesk.surface.plot --ticker SPY --date
-    2026-10-19`. Check RMSE is small, the arbitrage flags, and that the smiles look sensible.
+  - [x] Fit Monday's live snapshot (branch `m7-live`): RMSE 0.05-0.23 vol points; every
+    butterfly flag is in the extrapolated call wing; 6 calendar crossings touch the quoted
+    range at its edge (0.02-0.65 vol points; independent per-slice fits). PNGs in
+    `docs/images/live/`.
 - [x] **M4a Hedging sim:** GBM (exact) and Heston (full-truncation Euler) paths; delta-hedge
   P&L with transaction costs. Tests: theoretical moments, martingale property, P&L std shrinks
   as 1/sqrt(rebalances), costs reduce P&L, wrong-vol P&L sign. README section, study notes
@@ -93,6 +97,8 @@ data/plots/       gitignored, HTML output of python -m optdesk.surface.plot
     study notes (section 18) and `docs/images/mm_*.png` comes from the synthetic surface. Rerun
     on live data once Monday's snapshot is fitted (M3 live fit), compare, and update the docs:
     `python -m optdesk.sim.mm_plot --ticker SPY --date 2026-10-19 --out data/plots`.
+    Rerun done on branch `m7-live` (full-chain snapshot, charts in `docs/images/live/`, and
+    the hedging study now takes `--ticker/--date` too). README and study notes not yet updated.
 - [x] **M5 App** (merged to main): Streamlit tabs
   Surface, Hedging simulator (adjustable parameters), Market maker, Portfolio Greeks, on a
   swappable market (`surface/market.py`: synthetic by default, saved snapshots appear in the
