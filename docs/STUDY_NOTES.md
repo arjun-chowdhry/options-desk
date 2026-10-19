@@ -8,6 +8,8 @@ tests in `tests/` are the proof each claim holds.
 - **M2 Data** (`data/`): sections 5–8
 - **M3 Surface** (`surface/`, plus de-Americanizing in `data/clean.py`): sections 9–12
 - **M4a Hedging** (`sim/paths.py`, `sim/hedging.py`, `sim/plot.py`): sections 13–15
+- **M4b Market making** (`surface/source.py`, `sim/market_maker.py`, `sim/mm_plot.py`):
+  sections 16–18
 
 Notation: spot `S`, strike `K`, expiry `T` in years, rate `r`, dividend yield `q`, vol `σ`,
 forward `F = S·e^((r−q)T)`, `N` the standard normal CDF, `n` its density.
@@ -978,3 +980,246 @@ Scaling:          hedging error ~ 1/√N,  total cost ~ √N
 5. **Short-dated ATM option: what's the bigger risk, hedging error or vol?**
    Near expiry, gamma explodes near the strike, so hedging error and pin risk dominate. For
    longer-dated options vega dominates, and the question is realized vs implied vol.
+
+---
+
+# M4b: Market-making simulator
+
+Notation as above, plus `γ` the dealer's risk aversion (per dollar; not the Greek, which is
+`Γ`), `σ_v` the vol of vol (how much implied vol moves, in vol per √year), `H` the risk
+horizon, `V` the book's vega, `ν` the vega one fill adds, `A` and `k` the customer arrival rate
+and how fast it decays with distance from theo.
+
+Charts: `docs/images/mm_*.png` (regenerate with `python -m optdesk.sim.mm_plot`).
+
+## 16. Where theo comes from: swappable surfaces (`surface/source.py`)
+
+### Why it works
+A market maker quotes around **theoretical value** (theo): what the desk thinks the option is
+worth. For a listed option that's Black-Scholes at the vol the *surface* gives that strike and
+expiry. The simulator needs only one thing from a surface, `implied_vol(k, T)`, so anything
+with that method plugs in (a Python `Protocol`: duck typing with a name):
+
+- `synthetic_surface()`: the synthetic SSVI surface from M3, analytic in `T`. The default
+  until we have live data.
+- `fitted_surface(fit_chain(clean_chain(snapshot)))`: SVI fits of a real snapshot. Between
+  fitted expiries it interpolates **total variance linearly in T at fixed k**. If every slice
+  has `w` rising with `T`, so does every interpolated point, so the interpolation can't
+  create calendar arbitrage. Outside the fitted range each strike's vol is held constant.
+- `FlatSurface(0.2)`: the Black-Scholes world, for tests.
+
+`python -m optdesk.sim.mm_plot --ticker SPY --date 2026-10-19` reruns the whole study on
+Monday's fitted surface without touching the simulator.
+
+### Key formulas
+```
+Theo:                 V_i = BS(S, K_i, T_i, r, σ_surface(k_i, T_i) + x)
+Log-moneyness:        k = ln(K/F),  F = S e^((r−q)T)
+Linear-in-w interp:   w(k,T) = w_j(k) + (T − T_j)/(T_(j+1) − T_j) · (w_(j+1)(k) − w_j(k))
+```
+
+### Interview questions
+1. **Why interpolate total variance rather than vol between expiries?**
+   No calendar arbitrage means total variance `σ²T` can't fall as `T` grows. A weighted average
+   of two non-decreasing functions is non-decreasing, so linear-in-`w` interpolation keeps that
+   property for free. Linear in vol doesn't, and it makes forward vols jump at each expiry.
+2. **What are "sticky strike" and "sticky moneyness"?**
+   Two assumptions about how the smile moves when spot moves. Sticky strike: the vol at each
+   strike stays put. Sticky moneyness (or sticky delta): the smile slides with spot, so the vol
+   at a fixed `K/F` stays put. Our simulated surface is sticky-moneyness. Equity index reality
+   is somewhere in between, with vols also rising as spot falls.
+3. **Why write the simulator against an interface rather than the synthetic surface?**
+   We don't have live fits yet, and when we do the simulator shouldn't change. It also makes
+   tests sharp: on a flat surface, both delta methods must agree exactly.
+
+## 17. Quoting: Avellaneda-Stoikov in vol space (`sim/market_maker.py`)
+
+### Why it works
+A market maker earns the bid-ask spread but has to hold whatever customers trade: its
+**inventory**. Avellaneda & Stoikov (2008) solve this for a dealer with exponential utility.
+Fills arrive as Poisson processes with rate `A e^(−kδ)` for a quote `δ` away from fair value:
+quote tighter and you trade more but earn less per trade. The optimal policy has two pieces:
+
+1. **Reservation price** `s − q γ σ² H`: your own value of the asset, given what you hold. If
+   you're long, it's *below* fair value, because one more unit adds risk you don't want.
+   Both quotes are centred on it, so a long book shows a lower bid (buys less) and a lower ask
+   (sells more): inventory mean-reverts.
+2. **Spread** `γσ²H + (2/γ) ln(1 + γ/k)` around it. The log term is the monopolist's markup
+   (it tends to `2/k` as `γ → 0`); the first term is extra pay for the risk each fill adds.
+
+**The options twist.** An options desk hedges delta, so spot moves aren't its inventory risk.
+What's left is **vega**: if implied vols move by `dσ`, the book makes `V · dσ`. So we treat the
+vol level as the risky asset. Every option loads on that one vol factor, so in the
+multi-asset A-S reservation price `s_i − γH·Cov(dV_i, dBook)`, the covariance is
+`vega_i · V · σ_v²`. Divide by `vega_i` to quote in vol, and every option's reservation vol is
+**theo minus the same shift**:
+
+```
+reservation vol = theo vol − γ σ_v² H V
+```
+
+That's how vol traders talk: "I'm long vega, lower my vols." The spread in vol for a fill
+adding vega `ν` is `γνσ_v²H + (2/(γν))·ln(1 + γν/k)`.
+
+**The numbers here.** `γ = 5×10⁻⁵`, `σ_v` = 10 vol points a year, `H` = 1 day, `k = 200` (fills
+drop by a factor of `e` for every half vol point further from theo), `A = 1,000` a year per
+side per contract, 10-lot trades. For a 10-lot of the 2-month ATM (~$950 of vega per vol
+point) the half-spread is **0.50 vol points**, and a book long $10k per vol point shades every
+quote down by **0.2 vol points**. At the $25k vega limit the shift equals the half-spread, so
+the ask sits exactly on theo (`mm_frontier.png`, left).
+
+**Design choices.**
+- *Constant risk horizon `H` (1 day)* instead of A-S's time to the close. A-S assume you end
+  the session flat, so their quotes collapse to symmetric at the close. A desk carrying a book
+  for weeks doesn't. Guéant, Lehalle & Fernandez-Tapia (2013) show the optimal quotes settle to
+  stationary values far from the end, and a fixed `H` is the practical stand-in.
+- *The same A-S spread with and without skew,* so the comparison isolates the skew.
+- *Delta hedged every 15 minutes* with Black-Scholes delta at each option's smile vol
+  (sticky-strike delta), paying 1 bp per share.
+
+### Key formulas
+```
+Fill rate:            λ(δ) = A e^(−kδ),  fills in dt ~ Poisson(λ dt)
+A-S reservation:      r = s − q γ σ² H
+A-S spread:           δ_a + δ_b = γ σ² H + (2/γ) ln(1 + γ/k)       → 2/k as γ → 0
+In vol (options):     shift = γ σ_v² H V;   half-spread = ½γνσ_v²H + ln(1 + γν/k)/(γν)
+Spread rises with γ   whenever σ² H k² ≥ 1 (here σ_v² H k² = 1.6)
+```
+
+### Interview questions
+1. **You're a market maker and you're long a lot of vega. What do you do with your quotes?**
+   Lower both your bid and offer vol. You become the best offer (customers buy from you) and a
+   worse bid (they stop selling to you), so the position works itself off without you crossing
+   the spread. That's the A-S reservation price. If it's urgent, hedge directly: sell vega in
+   another strike or expiry, or a variance swap.
+2. **Why does the spread widen when volatility is high?**
+   Each fill adds inventory whose value moves by `σ` per √time, so more vol means each fill
+   carries more risk and needs more compensation (`γσ²H`). Wider spreads in high vol are
+   rational, not greed. A test checks the spread rises with `σ_v`.
+3. **What does the `(2/γ) ln(1 + γ/k)` term mean?**
+   With no risk aversion it's `2/k`: a monopolist facing exponential demand maximizes
+   `δ · e^(−kδ)` at `δ = 1/k`. It's the spread you'd quote purely to make money on flow.
+   Risk aversion trims it slightly, because a risk-averse dealer values trading more.
+4. **Why quote in vol rather than in price?**
+   Vol is comparable across strikes and expiries; a $0.10 edge means very different things on
+   a $0.50 wing put and a $20 ATM call. The skew also becomes one number for the whole book,
+   because all options load on the same vol factor.
+5. **What does A-S leave out?**
+   Adverse selection (informed customers who know where vol is going), jumps, competition from
+   other dealers, a smile that changes shape (our shift is parallel), and gamma. Our desk skews
+   on vega only; the gamma it's left with is handled by the gamma limit (section 18).
+
+## 18. P&L attribution, risk limits and what skewing changes (`sim/market_maker.py`, `sim/mm_plot.py`)
+
+### Why it works
+**Three buckets that add up exactly.** Each step, the desk's mark-to-market P&L splits into:
+
+- **Spread capture**: at each fill, the traded price minus theo, from the desk's side. This is
+  the desk's edge. With skew, some trades happen on the "wrong" side of theo (a long desk's
+  shaded ask can sit below theo), so skewing gives some edge back.
+- **Hedging**: option value change from spot and time at *unchanged* vols (gamma, theta, the
+  smile rolling with spot), plus the share hedge, dividends, interest and hedge costs. When
+  realized vol tracks implied, this is noise around minus the hedge costs (a test checks it on
+  a flat surface).
+- **Inventory**: option value change from the vol move, `≈ V·dσ`. This is the cost of carrying
+  inventory, and it's what skewing targets.
+
+The order matters: we revalue at the new spot and time with the *old* vol, then apply the vol
+move. Tests check that the buckets add up to the mark-to-market P&L (cash + options at theo +
+shares) within 1e-9 of its size, and that with no vol moves the inventory bucket is exactly 0.
+
+**Risk limits** (vega $25k per vol point; gamma $1m of delta per 1% move) work like a
+pre-trade check: a quote is shown only if one more fill there would keep the book inside both
+limits. Near the long-vega limit the desk stops bidding but keeps offering. It never trades
+*out* of a breach, so the market can still push exposure past a limit (the gamma of a
+near-dated option near its strike), but only briefly.
+
+**The study.** 12 SPY options (2-, 3- and 6-month; strikes at 90/95/100/105% of the forward),
+one month of 15-minute steps, 1,000 paths. Both desks see the *same* market paths and the
+*same* customer random numbers, so every difference comes from the quoting rule
+(`mm_attribution.png`, `mm_inventory.png`):
+
+| $ per month | No skew | A-S skew |
+| --- | --- | --- |
+| Spread capture (mean) | 313,491 | 314,186 |
+| Hedging (mean) | −9,885 | −9,319 |
+| Inventory (mean) | +669 | +766 |
+| **Total (mean ± SE)** | **304,275 ± 1,124** | **305,633 ± 796** |
+| Spread capture std | 19,739 | 20,154 |
+| Hedging std | 28,150 | 21,269 |
+| Inventory std | 35,371 | 13,510 |
+| **Total std** | **35,544** | **25,162** |
+| Customer fills | 720 | 737 |
+| Std of ending vega ($/vol pt) | 13,474 | 3,917 |
+| Average \|vega\| ($/vol pt) | 10,367 | 2,994 |
+| Average \|gamma\| ($ delta per 1%) | 294,394 | 220,666 |
+| Steps with a quote pulled by a limit | 4.5% | 0.6% |
+
+What changed when we turned skewing on:
+
+- **Inventory risk fell by almost two thirds** (std $35k → $14k) because vega inventory stays
+  near zero: average |vega| fell from $10.4k to $3.0k per vol point. Without skew, inventory
+  is a random walk that only the limit stops; with skew, it mean-reverts.
+- **Total risk fell by 29%** ($35.5k → $25.2k), and mean/std rose from 9 to 12.
+- **The average didn't fall:** $305.6k vs $304.3k is within one standard error. Skewing gives
+  up some edge per trade, but here it gets *more* fills (737 vs 720). Fill rates are convex in
+  the quote (`e^(−k(δ−s)) + e^(−k(δ+s)) ≥ 2e^(−kδ)`), so the side shaded towards theo gains
+  more fills than the far side loses.
+- **The limits almost stopped binding** (4.5% → 0.6% of steps).
+- **Hedging risk fell too** ($28k → $21k): a smaller book has less gamma to hedge.
+
+**The risk-aversion sweep** (`mm_frontier.png`, right) shows the trade-off. A little skew
+(`γ = 1–2×10⁻⁵`) slightly *raises* mean P&L while cutting risk. Past `γ ≈ 5×10⁻⁵` risk stops
+falling (it levels off near $24k) and the desk starts paying for it: spread capture falls to
+$301k at `γ = 2×10⁻⁴`.
+
+**Why does risk level off at ~$24k?** Two risks are left that a parallel-vega skew can't see:
+
+1. **Gamma and term structure.** A book can be vega-flat and still short gamma: short
+   front-month, long back-month. In `mm_path.png` the skewed desk sits around −$400k of gamma
+   on a nearly flat vega book. The gamma limit is the only control on that.
+2. **Strike-level carry.** Each option earns `½ΓS²(σ_realized² − σ_its_implied²)`. Wing puts
+   are marked at 20%+ vol while spot realizes ~15%, so a vega-flat book that's long wing puts
+   and short ATM calls bleeds, and one short wing puts earns. That's smile risk, not
+   vol-level risk.
+
+**Which delta?** `delta_method="sticky_moneyness"` hedges with the surface-consistent delta
+(bump spot, reprice on the moving smile). Without skew it halves the *hedging* bucket's noise
+($36k → $20k in a 200-path check) but *raises* total risk ($42k → $53k). The reason: vols
+here fall when spot rises (correlation −0.7), and the plain sticky-strike delta happens to lean
+against that, a crude minimum-variance hedge (Hull & White 2017). The best delta depends on how
+vols really move with spot, which is an empirical question for the live data.
+
+### Key formulas
+```
+Spread capture:   Σ fills · size · mult · (ask − theo)  or  (theo − bid)
+Hedging:          Σ pos · [V(S₁, t₁, x₀) − V(S₀, t₀, x₀)] + shares·ΔS + carry − costs
+Inventory:        Σ pos · [V(S₁, t₁, x₁) − V(S₁, t₁, x₀)]  ≈ V · Δσ
+Check:            spread + hedging + inventory = cash + Σ pos·theo + shares·S
+Pre-trade limit:  show the bid on i only if V + ν_i ≤ V_max and Γ + Γ_i ≤ Γ_max
+```
+
+### Interview questions
+1. **How does a market maker make money, and how does it lose it?**
+   It earns the bid-ask spread on customer flow (about $435 per trade here) and loses on the
+   inventory it's forced to hold when prices (for options: vols) move against it. Good market
+   making is spread minus inventory losses; the A-S skew is about keeping the second small.
+2. **Your desk made $300k this month. How do you know whether it was skill or luck?**
+   Attribute it. Spread capture is repeatable edge. Inventory P&L is a vol bet that happened
+   to pay (or not). Hedging P&L is noise plus costs. A month that's mostly inventory P&L wasn't
+   market making, it was a position. Here spread capture is 103% of P&L; hedging costs eat 3%.
+3. **Skewing cut risk by 29% and didn't lower the mean. Isn't that free money?**
+   Nearly, at this level: you're refusing to let inventory pile up, so you don't carry risk you
+   aren't paid for. But the sweep shows it isn't unlimited. Past a point the desk gives up
+   more edge per trade than it saves in risk, and mean P&L falls. Choosing `γ` is choosing a
+   point on that frontier, usually from the desk's risk budget.
+4. **You're vega-flat. Are you flat?**
+   No. You can be short front-month gamma against long back-month vega (term-structure risk),
+   long downside vega against short upside vega (skew risk), or exposed to vols moving
+   differently by strike. Vega is one number summarizing a whole surface of risks. Our skewed
+   desk shows it: vega near zero, gamma −$400k.
+5. **Why use a pre-trade check instead of a hard cap on the book?**
+   Because the trade is the thing you control. Checking "would this fill breach?" stops you
+   walking into a breach. Exposure can still drift past the limit as markets move the Greeks,
+   which is why real desks also have a process to trade *out* of breaches (here the skew does
+   that gently).
