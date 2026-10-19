@@ -10,6 +10,8 @@ tests in `tests/` are the proof each claim holds.
 - **M4a Hedging** (`sim/paths.py`, `sim/hedging.py`, `sim/plot.py`): sections 13–15
 - **M4b Market making** (`surface/source.py`, `sim/market_maker.py`, `sim/mm_plot.py`):
   sections 16–18
+- **M5 Dashboard** (`pricing/portfolio.py`, `surface/market.py`, `sim/lab.py`, `app/`):
+  sections 19–20
 
 Notation: spot `S`, strike `K`, expiry `T` in years, rate `r`, dividend yield `q`, vol `σ`,
 forward `F = S·e^((r−q)T)`, `N` the standard normal CDF, `n` its density.
@@ -1223,3 +1225,113 @@ Pre-trade limit:  show the bid on i only if V + ν_i ≤ V_max and Γ + Γ_i ≤
    walking into a breach. Exposure can still drift past the limit as markets move the Greeks,
    which is why real desks also have a process to trade *out* of breaches (here the skew does
    that gently).
+
+---
+
+## 19. Portfolio Greeks and scenario risk (`pricing/portfolio.py`)
+
+### Why it works
+A desk manages a *book*, not an option. Greeks are linear in position size, so the book's delta
+is the sum of every position's delta times its contracts times the multiplier (100 shares).
+The same goes for every other Greek. The one subtlety is units. Raw Greeks are per 1.00 of vol,
+rate and year, which nobody quotes, so a risk report converts them: vega in **$ per vol
+point**, theta in **$ per day**, rho in **$ per 1%**, and gamma in **$ of delta per 1% move**
+(`Γ·S²/100`). That last one makes a SPY book comparable to a single-stock book: "I gain $40k of
+delta if the market rallies 1%".
+
+Each option is valued at the surface's vol for its own strike and expiry (`k = ln(K/F)`), so
+an OTM put carries its higher skew vol. Identical books show different risk on different
+surfaces, as they should.
+
+The Greeks are a Taylor expansion: `P&L ≈ Δ·dS + ½Γ·dS² + vega·dσ + vanna·dS·dσ + ½volga·dσ²`.
+That's good for small moves and wrong for big ones, because gamma itself changes as spot moves
+(a short straddle loses far more on a 15% crash than gamma predicts). So the scenario grid
+uses **full revaluation**: it reprices every option at each shocked spot and vol. Vol shocks
+are parallel and *sticky-strike* (each option keeps its own vol plus the shock), the usual
+convention for risk reports. It's also the world the Black-Scholes Greeks describe, so a tiny
+shock on the grid reproduces delta, gamma and vega exactly (the tests check this by finite
+differences).
+
+### Key formulas
+```
+Book Greek:       G_book = Σ_i  qty_i · 100 · G_i
+Desk units:       vega/100 ($/pt), theta/365 ($/day), rho/100 ($/1%), Γ·S²/100 ($Δ per 1%)
+Parity check:     long call + short put (same K, T) = forward → Δ = e^(−qT), Γ = vega = 0
+Taylor P&L:       Δ·dS + ½Γ·dS² + vega·dσ + vanna·dS·dσ + ½volga·dσ²   (error ~ dS³)
+Delta hedge:      shares = −round(Σ option deltas)
+```
+
+### Interview questions
+1. **You're long a straddle and flat delta. What are you exposed to?**
+   Long gamma (you make money on big moves either way), long vega (you make money if implied
+   vol rises), short theta (you bleed every day nothing happens). Breakeven is roughly a daily
+   move of `σ/√252`: realized vol has to beat the implied vol you paid.
+2. **Why show gamma as "$ delta per 1%" rather than raw gamma?**
+   Raw gamma is shares per $1, which depends on the stock's price level: a $1 move means
+   something different for a $50 stock than for a $580 ETF. `Γ·S²/100` is the dollar delta you
+   gain on a 1% move. It's comparable across underlyings and adds up across a book.
+3. **When do the Greeks mislead you, and what do you do instead?**
+   On large moves, when gamma itself changes fast (short-dated options near the strike,
+   barriers), and when vols don't move in parallel. So you run scenarios with full revaluation
+   over a grid of spot and vol shocks, and stress the skew and term structure separately.
+4. **A calendar spread (short 1m, long 3m ATM) is long vega. Is it a bet that vol goes up?**
+   Only on a parallel move. It's short gamma (the front month has more), so it loses on
+   big moves, and it's long *back-month* vol against short *front-month* vol, so it's
+   really a term-structure trade: it wins if the curve steepens or front vol collapses.
+   One vega number hides that.
+5. **Sticky-strike or sticky-moneyness for scenarios?**
+   Sticky-strike keeps each option's vol as spot moves. Sticky-moneyness moves the smile with
+   the forward, so after a selloff an ATM option picks up a lower vol. Equity index skew sits
+   between the two in practice. Desks pick one convention for the official report and stress
+   the other; we report sticky-strike because it matches the Black-Scholes Greeks shown.
+
+## 20. The dashboard: swappable data and a math-free UI (`surface/market.py`, `sim/lab.py`, `app/`)
+
+### Why it works
+Three layers, each with one job:
+
+1. **Data source** (`surface/market.py`): a `MarketData` bundle (spot, r, q, the pricing
+   surface, SVI fits, clean quotes). The synthetic source prices on the known SSVI truth. A
+   snapshot source cleans the saved chain (de-Americanizing SPY), fits SVI per expiry and
+   interpolates in total variance. Its `r` comes from the Treasury curve, and `q` is backed out
+   of the parity forward (`q = r − ln(F/S)/T`), so theo uses the carry the options themselves
+   imply. Everything downstream sees only `MarketData`, so switching to live data is a dropdown
+   choice.
+2. **Experiments** (`sim/lab.py`, `pricing/portfolio.py`): run the tested engines with the
+   user's parameters and return chart-ready results (percentile bands, average P&L paths,
+   quote curves). All of this is unit-tested against the M4 answer keys.
+3. **UI** (`app/`): widgets, layout and Plotly figures, and nothing else. The UI holds no math,
+   so a bug in a number is always in a tested module, never in a widget callback.
+
+Streamlit reruns the whole script on every interaction, so expensive work is cached by its
+inputs. The market is built once per source (`st.cache_resource`), and each simulation runs
+once per parameter set (`st.cache_data`). Simulation controls sit in forms, so dragging a slider
+doesn't start a run until you press **Run simulation**.
+
+### Key facts
+```
+Run:               streamlit run src/optdesk/app/main.py
+New data source:   save a snapshot (python -m optdesk.data.fetch SPY) → it appears in the list
+Snapshot folder:   data/snapshots/, or set OPTDESK_SNAPSHOT_ROOT
+Carry from chain:  r = curve(T≈3m),  q = r − ln(F/S)/T
+Smoke tests:       streamlit.testing.v1.AppTest runs main.py headless (no browser, no network)
+```
+
+### Interview questions
+1. **How would you switch this dashboard from synthetic to live data?**
+   Nothing in the UI changes. Save a snapshot and pick it in the sidebar: the loader cleans
+   it, fits SVI per expiry, builds an interpolated `VolSurface`, and every tab prices on it.
+   That works because the tabs depend on an interface (`MarketData` / `VolSurface`), not on
+   where the data came from.
+2. **Why not take the dividend yield from a data vendor?**
+   SPY pays lumpy quarterly dividends, and a trailing yield is backward-looking. The
+   forward implied by put-call parity is what the option market is actually pricing. Using it
+   keeps theo consistent with the quotes, so a model ATM call and put price like the market's.
+3. **Why keep math out of the UI layer?**
+   Testability. UI code is hard to unit-test and changes often; numerical code needs to be
+   right. With the math in modules, every number on screen comes from a function with a
+   known-answer test, and the UI only needs a smoke test that it renders.
+4. **The app reruns everything on each click. How does it stay fast?**
+   Caching keyed by inputs (same parameters → stored result), forms that batch slider
+   changes into one run, and modest default path counts. The slow step, building and fitting
+   the synthetic chain (~7 s), runs once per session.

@@ -214,3 +214,39 @@ expectation (mean and variance); the three P&L buckets adding to the mark-to-mar
 realized = implied; both delta methods agreeing on a flat surface; vega and gamma limits
 binding; reproducibility from seeds; skewing cutting the spread of ending vega by over half;
 and a fitted SVI surface reproducing the analytic one's results.
+
+## Dashboard (`optdesk.app`)
+
+```powershell
+streamlit run src/optdesk/app/main.py
+```
+
+This opens a browser tab with four tabs, all driven by one market chosen in the sidebar:
+
+| Tab | What you can do | Built on |
+| --- | --- | --- |
+| **Surface** | Rotate the 3D SVI surface, compare each expiry's smile with the quotes, read the fit RMSE and the butterfly / calendar arbitrage flags | `surface/svi.py`, `arbitrage.py`, `plot.py` |
+| **Hedging simulator** | Buy or sell a call or put, pick its strike and expiry, the implied vol (the surface's vol for that strike, or your own) and the realized vol (GBM) or Heston parameters, hedge frequency, costs and path count, then see the P&L distribution, the `1/√N` law against Derman-Kamal, and P&L path by path against the gamma formula | `sim/lab.py` → `paths.py`, `hedging.py` |
+| **Market maker** | Set risk aversion, fill model, vol of vol, spot-vol correlation and vega/gamma limits; the skewed and unskewed desks run on the same market and customers, with P&L attribution, book vega bands, P&L distributions and the quote-skew curve | `sim/lab.py` → `market_maker.py` |
+| **Portfolio Greeks** | Start from a preset book (straddle, risk reversal, calendar, butterfly) and edit it like a spreadsheet; see delta, gamma, vega, theta, rho, vanna and volga per position and in total (desk units), optionally delta-hedged with shares, plus a spot × vol scenario grid by full revaluation and where the Greeks' Taylor estimate breaks down | `pricing/portfolio.py` |
+
+| Module | What it does | Key design choice |
+| --- | --- | --- |
+| `surface/market.py` | One `MarketData` bundle (spot, r, q, pricing surface, SVI fits, clean quotes) from the synthetic market or any saved snapshot; `available_sources()` lists them | The app only sees a `MarketData`, so live data is a dropdown choice: Monday's snapshot appears on its own once saved, no code changes. For snapshots `q` is backed out of the parity forward, so theo uses the options' own carry |
+| `pricing/portfolio.py` | Book Greeks in desk units ($ per vol point, $ per day, $ delta per 1%), share hedge, scenario grid, Taylor estimate | Scenarios reprice every option (full revaluation, parallel sticky-strike vol shocks) instead of trusting the Greeks for large moves |
+| `sim/lab.py` | The M4 hedging and market-making experiments with every parameter exposed, returning chart-ready results | The app holds no math: percentiles, average P&L paths and quote curves are computed and tested here |
+| `app/` | `main.py` (sidebar and tabs), `views/` (one file per tab, layout only), `charts.py` (Plotly figures) | The market and every simulation are cached by their inputs, so moving between tabs is instant; simulation controls sit in forms and run when you press **Run simulation** |
+
+The market is the **synthetic SPY surface** for now (its pricing surface is the known SSVI
+truth). Snapshots saved by `python -m optdesk.data.fetch` under `data/snapshots/` show up in
+the sidebar's **Data source** list; set `OPTDESK_SNAPSHOT_ROOT` to read them from elsewhere.
+
+How it's tested: the portfolio Greeks equal the closed-form Greeks times size, call minus put
+is a forward (delta `e^(−qT)`, zero gamma and vega), finite differences of the scenario grid
+recover delta, gamma and vega, and the Taylor error shrinks 8× when the move halves; the
+market sources recover spot, rates, the parity-implied dividend yield and the true surface from
+a saved snapshot; the labs reproduce the M4 answer keys (zero mean and Derman-Kamal std at fair
+vol, `BS(realized) − BS(implied)` at the wrong vol, buckets summing to total); and
+`streamlit.testing.v1.AppTest` runs the real app headless: every tab renders, the hedging
+widgets rerun the simulation, the delta-hedge checkbox flattens delta, and a saved snapshot
+appears in the dropdown and loads.
