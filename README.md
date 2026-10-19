@@ -1,19 +1,191 @@
 # options-desk
 
-An options desk toolkit in Python: pricing and Greeks, implied vol, volatility surfaces, and
-hedging and market-making simulators. Every numerical function is unit-tested against known
-answers (textbook values, no-arbitrage identities, finite differences).
+A Python toolkit that does the core work of an equity options desk, from raw quotes to a
+risk-managed book. It prices European and American options and their Greeks, downloads and
+cleans SPY option chains, backs out implied vols and fits an arbitrage-checked SVI
+volatility surface. On that surface it runs two simulators: one delta-hedges an option on
+thousands of price paths, the other makes markets in a book of SPY options with
+Avellaneda-Stoikov inventory skew, risk limits and a P&L split into spread capture, hedging
+and inventory. A Streamlit dashboard puts all of it behind sliders. Every numerical function
+is unit-tested against a known answer (textbook values, no-arbitrage identities, finite
+differences, theoretical moments): 437 tests, all offline.
 
-## Setup
+> **Status:** every result below is on a **synthetic SPY market**: a known, arbitrage-free
+> SSVI surface run through the real cleaning and fitting pipeline, so each number can be
+> checked against the truth. The first live SPY snapshot is scheduled for Monday 2026-10-19,
+> after which the surface and market-maker results will be rerun on real quotes.
+
+## Results
+
+### 1. Volatility surface
+
+![Implied volatility surface](docs/images/surface.png)
+
+- **Fit quality:** SVI fitted per expiry to 649 cleaned quotes across 8 expiries (7 days to
+  14 months). RMSE is **0.01–0.04 vol points** per expiry. With bid-ask noise and American
+  early exercise in the prices, every fitted smile stays within **0.1 vol points** of the true
+  surface.
+- **No arbitrage:** every slice passes the butterfly check (Gatheral's `g(k) ≥ 0`, minimum
+  0.25) and the calendar check (total variance rising with expiry at every strike).
+- **American exercise matters:** SPY options are American. Treating them as European biases a
+  1-year near-the-money put's implied vol up by **~0.6 vol points** and the parity forward
+  down by **~38bp**. The cleaner strips the early-exercise premium on a binomial tree first,
+  which recovers the true forward to **0.5bp**.
+
+### 2. Delta hedging
+
+![Hedging frequency](docs/images/hedge_frequency.png)
+
+A 3-month at-the-money call ($4.31 premium) bought at 20% implied vol and delta-hedged on the
+same 5,000 paths at seven frequencies:
+
+- **Discrete hedging leaves risk, and it falls like 1/√N.** P&L std is **$1.82** hedging
+  monthly (42% of the premium) and **$0.17** hourly (4%). The log-log slope is **−0.48**
+  (theory −0.5), and every point sits within 10% of the Derman-Kamal formula ($2.02 → $0.17).
+  The mean stays at zero at every frequency (all within 1 standard error).
+- **Hedging P&L is a bet on realized vs implied vol.** Hedged hourly at 20%, the average P&L
+  is **+$0.99** if the stock realizes 25% and **−$0.99** if it realizes 15%. That matches the
+  gamma formula `∫ ½ΓS²(σ²_realized − σ²_implied) dt` (+$0.991 / −$0.993) and the
+  Black-Scholes value gap. Path by path, the formula and the P&L have a correlation of
+  0.86–0.99.
+- **It holds under stochastic vol.** On Heston paths (vol of vol 50%, spot-vol correlation
+  −0.7) the mean P&L is −$0.163 against −$0.164 from the formula, with a path-by-path
+  correlation of **0.98**.
+- **Costs make hedging frequency a trade-off.** At a 5bp half-spread, going from daily to
+  hourly cuts the std from $0.43 to $0.20 but more than doubles the cost, from $0.15 to
+  **$0.36 per option (8% of premium)**.
+
+![Gamma P&L](docs/images/gamma_pnl.png)
+
+More: [P&L histograms](docs/images/hedge_pnl_histograms.png),
+[transaction costs](docs/images/hedge_costs.png).
+
+### 3. Market making
+
+![Market-making P&L attribution](docs/images/mm_attribution.png)
+
+One month of making markets in 12 SPY options (2-, 3- and 6-month expiries), 1,000 paths,
+with implied vols moving 10 points a year (correlated −0.7 with spot). The two desks see the
+same market and the same customers:
+
+| $ per month | No skew | A-S skew |
+| --- | --- | --- |
+| Spread capture | 313,491 | 314,186 |
+| Hedging | −9,885 | −9,319 |
+| Inventory | +669 | +766 |
+| **Total P&L (mean ± SE)** | **304,275 ± 1,124** | **305,633 ± 796** |
+| **Total P&L std** | **35,544** | **25,162** |
+| Inventory P&L std | 35,371 | 13,510 |
+| Average \|book vega\| ($ per vol point) | 10,367 | 2,994 |
+| Steps with a quote pulled by a risk limit | 4.5% | 0.6% |
+
+- **The money is the spread.** Spread capture is ~103% of P&L (about $430 a fill over ~730
+  fills); hedging costs take ~3% back.
+- **Skewing quotes by inventory cuts risk by 29% at no cost to the mean.** Inventory risk falls
+  by almost two thirds ($35k → $14k) because book vega mean-reverts instead of random-walking
+  into the limit. The mean is unchanged within one standard error ($305.6k vs $304.3k), and
+  the risk limits almost stop binding.
+- **There is a frontier.** A little risk aversion slightly *raises* the mean; past
+  `γ ≈ 5×10⁻⁵` the risk stops falling (~$24k) and spread capture drops ($301k at
+  `γ = 2×10⁻⁴`). What's left is gamma and smile risk that a vega-only skew can't see.
+
+![Inventory](docs/images/mm_inventory.png)
+
+More: [one simulated month](docs/images/mm_path.png),
+[quote skew and the risk-aversion frontier](docs/images/mm_frontier.png).
+
+## Install and run
+
+Needs Python 3.11 or newer. On Windows (PowerShell):
 
 ```powershell
-python -m venv .venv
-.venv\Scripts\Activate.ps1
-pip install -e ".[dev]"
-pytest
+git clone https://github.com/arjun-chowdhry/options-desk.git
+cd options-desk
+python -m venv .venv                 # a private Python environment for this project
+.venv\Scripts\Activate.ps1           # macOS/Linux: source .venv/bin/activate
+pip install -e ".[dev]"              # the package plus pytest and ruff
+pytest                               # run the test suite (offline, a few minutes)
 ```
 
-## Pricing (`optdesk.pricing`)
+Then:
+
+```powershell
+streamlit run src/optdesk/app/main.py                     # the dashboard, in your browser
+python -m optdesk.surface.plot --png docs/images/surface.png  # fit the surface, write the plots
+python -m optdesk.sim.plot                                # hedging study: tables + charts
+python -m optdesk.sim.mm_plot                             # market-making study: tables + charts
+python -m optdesk.data.fetch SPY --max-expiries 6         # save today's SPY chain (market hours)
+```
+
+Every study is seeded, so these commands reproduce the numbers above exactly. After fetching a
+snapshot, add `--ticker SPY --date YYYY-MM-DD` to the surface and market-maker commands, or
+pick the snapshot in the dashboard's sidebar.
+
+## Assumptions and limitations
+
+**Pricing**
+- Black-Scholes with a continuous dividend yield and constant rates. SPY's dividends are
+  really discrete and quarterly; a continuous yield backed out of the put-call parity
+  forward is a close but not exact stand-in.
+- American options are priced on a CRR binomial tree with that same continuous yield, so the
+  early-exercise premium around ex-dividend dates is approximate.
+
+**Data**
+- yfinance quotes are free, delayed about 15 minutes and come without quote timestamps, so the
+  cleaner can only filter stale quotes by last-trade time. It's fine for end-of-day
+  surfaces but not for intraday trading.
+- The live-fetch path is tested only against a mocked yfinance; the first real run is pending
+  (2026-10-19).
+
+**Volatility surface**
+- Raw SVI is fitted one expiry at a time. Arbitrage is *checked and reported*, not
+  *enforced*, so a noisy live chain can produce a flagged slice that needs refitting or
+  dropping. A joint SSVI fit would rule out calendar arbitrage by construction.
+- Between expiries, total variance is interpolated linearly in `T`, and SVI's wings are
+  extrapolated beyond the quoted strikes with no data behind them.
+
+**Hedging simulator**
+- Costs are a proportional half-spread; no market impact, financing spread or borrow cost.
+- Time is trading time: no overnight gaps or jumps. Real stocks gap at the open and on news,
+  which makes discrete hedging error fatter-tailed than shown here.
+
+**Market maker**
+- **No adverse selection.** Customers arrive at random (Poisson) and are uninformed: their
+  trades don't predict the next move. Real flow is partly informed, so the ~$305k a month of
+  spread capture is an upper bound, not an estimate of a real desk's revenue.
+- The desk's theo is the *true* surface. A real desk's theo has fitting error, and quoting off
+  a wrong theo leaks edge to customers.
+- The whole surface moves in parallel by a single vol factor, with fixed smile shape. Skew
+  and term-structure moves aren't simulated, which is why a vega-only skew looks so effective.
+- Fills are in fixed sizes at the quoted price, with no competing market makers and no
+  queue position.
+
+**Results**
+- All published numbers come from the synthetic SSVI surface (see Status above). The
+  synthetic chain is built to look like SPY, but it is not SPY.
+
+## Project layout
+
+```
+src/optdesk/
+  pricing/  black_scholes.py, greeks.py, implied_vol.py, binomial.py, portfolio.py
+  data/     fetch.py, clean.py, rates.py, store.py
+  surface/  svi.py, arbitrage.py, plot.py, synthetic.py, source.py, market.py
+  sim/      paths.py, hedging.py, plot.py, market_maker.py, mm_plot.py, lab.py
+  app/      main.py, views/, charts.py
+tests/      mirrors src/optdesk/; fixtures/ holds a saved chain for offline tests
+docs/       STUDY_NOTES.md (theory, formulas, interview questions), images/
+```
+
+The reasoning behind each model choice is in the module docstrings and in
+[`docs/STUDY_NOTES.md`](docs/STUDY_NOTES.md), which also has interview questions for every
+section and a whole-project set at the end.
+
+---
+
+## Module reference
+
+### Pricing (`optdesk.pricing`)
 
 | Module | What it does | Key design choice |
 | --- | --- | --- |
@@ -44,9 +216,9 @@ convergence to Black-Scholes, American ≥ European, and no early exercise of ca
 dividends.
 
 Conventions: `T` in years (ACT/365); `r`, `q` continuously compounded; vega per 1.00 vol,
-theta per year. Interview prep for this module: [`docs/STUDY_NOTES.md`](docs/STUDY_NOTES.md).
+theta per year.
 
-## Market data (`optdesk.data`)
+### Market data (`optdesk.data`)
 
 | Module | What it does | Key design choice |
 | --- | --- | --- |
@@ -54,10 +226,6 @@ theta per year. Interview prep for this module: [`docs/STUDY_NOTES.md`](docs/STU
 | `rates.py` | Converts T-bill/note quotes to continuous zero rates; interpolated `RateCurve` | Linear in `T`, flat beyond the ends |
 | `clean.py` | Drops zero-bid, crossed, wide and stale quotes; mid, `T`, forward, OTM only, IV, `k = ln(K/F)` | Forward from put-call parity (median of the 5 nearest strikes), so no dividend or borrow assumption |
 | `store.py` | Daily Parquet snapshots at `data/snapshots/{TICKER}/{YYYY-MM-DD}.parquet` | Raw chain plus rate curve in one file, so any day can be re-cleaned exactly |
-
-```powershell
-python -m optdesk.data.fetch SPY --max-expiries 6   # fetch, save today's snapshot, print summary
-```
 
 ```python
 from optdesk.data.store import load_snapshot
@@ -75,26 +243,18 @@ flagged. Plus: hand-computed T-bill and bond-yield conversions, year fractions a
 daylight-saving change, a Hypothesis test that parity recovers `S·e^((r−q)T)`, robustness to
 a bad quote, and exact Parquet round trips.
 
-## Volatility surface (`optdesk.surface`)
+### Volatility surface (`optdesk.surface`)
 
 | Module | What it does | Key design choice |
 | --- | --- | --- |
 | `svi.py` | Raw SVI smile per expiry; robust fit; `fit_chain` fits every expiry of a cleaned chain | Vega-weighted vol residuals; grid over `(m, σ)` with exact linear solves for the other three parameters, then bounded least squares (avoids local minima) |
 | `arbitrage.py` | Butterfly check (Gatheral's `g(k) ≥ 0`, Lee's wing bound) and calendar check (`w` non-decreasing in `T` at fixed `k`) | Reports *where* and *how badly* a surface fails, on a grid well beyond the quotes |
-| `plot.py` | Plotly 3D surface and per-expiry smile panels; `python -m optdesk.surface.plot` | Surface in ATM standard deviations so every expiry is comparable; nothing drawn beyond the quoted strikes |
+| `plot.py` | Plotly 3D surface and per-expiry smile panels, plus a static PNG for this README | Surface in ATM standard deviations so every expiry is comparable; nothing drawn beyond the quoted strikes |
 | `synthetic.py` | SPY-like American option chain from a known, arbitrage-free SSVI surface | An answer key for the fit: noise, penny ticks and early exercise, through the real cleaner |
 
-**American exercise.** SPY options are American, so their prices include an early-exercise
-premium that biases Black-Scholes vols up (~0.6 vol points on a 1-year near-the-money put) and
-the parity forward down (~38bp at 1 year). `clean_chain(..., american=True)` strips the
-premium on a CRR tree, iterating with the forward, so the surface is fitted to
-European-equivalent vols. The command-line tools default to American; pass `--european` for
-index options such as SPX.
-
-```powershell
-python -m optdesk.surface.plot                                # synthetic market -> data/plots/*.html
-python -m optdesk.surface.plot --ticker SPY --date 2026-10-19 # a saved snapshot
-```
+`clean_chain(..., american=True)` strips the early-exercise premium on a CRR tree, iterating
+with the forward, so the surface is fitted to European-equivalent vols. The command-line tools
+default to American; pass `--european` for index options such as SPX.
 
 ```python
 from optdesk.data.clean import clean_chain
@@ -118,34 +278,16 @@ flagged for butterfly arbitrage in the right `k` range; hand-built crossing slic
 where they cross; the synthetic SSVI surface passing both checks; de-Americanizing recovering
 the true forward (0.5bp) and vols, and skipping it showing the known bias; early-exercise
 premium of zero where theory says so (Merton's call, puts at zero rates) and matching a
-4,000-step reference elsewhere.
+4,000-step reference elsewhere; the README image plotting the same vols as the interactive
+surface.
 
-## Hedging simulator (`optdesk.sim`)
+### Hedging simulator (`optdesk.sim`)
 
 | Module | What it does | Key design choice |
 | --- | --- | --- |
 | `paths.py` | GBM paths (exact) and Heston stochastic-vol paths | GBM stepped with its exact solution (no discretization error); Heston by full-truncation Euler, the least-biased of the simple fixes for negative variance |
 | `hedging.py` | Buy or sell an option, delta-hedge it at the implied vol along every path, with proportional transaction costs; the gamma-P&L formula; the Derman-Kamal hedging-error estimate | Simulate once, hedge the *same* paths at every frequency, so differences come from hedging and not from luck; P&L in today's money |
-| `plot.py` | The 5,000-path study and its charts; `python -m optdesk.sim.plot` | Static PNGs (matplotlib) for the README and notes; the interactive version is for the app (M5) |
-
-A 3-month ATM call bought at 20% implied vol and delta-hedged on 5,000 paths, from monthly
-(3 hedges) to hourly (441):
-
-![Hedging frequency](docs/images/hedge_frequency.png)
-
-When realized vol is 20%, the mean P&L is zero at every frequency and the spread falls like
-`1/√N` (log-log slope −0.48), on top of the Derman-Kamal formula: $1.82 monthly, $0.17 hourly.
-When realized vol differs, the average P&L matches the gamma formula `∫ ½ΓS²(σ²_realized −
-σ²_implied) dt` and the Black-Scholes value gap: +$0.99 for 25% realized, −$0.99 for 15%.
-
-![Gamma P&L](docs/images/gamma_pnl.png)
-
-More charts: [P&L histograms](docs/images/hedge_pnl_histograms.png),
-[transaction costs](docs/images/hedge_costs.png).
-
-```powershell
-python -m optdesk.sim.plot     # runs the study, prints the tables, writes docs/images/*.png
-```
+| `plot.py` | The 5,000-path study and its charts; `python -m optdesk.sim.plot` | Static PNGs (matplotlib) for the README and notes; the interactive version is in the app |
 
 ```python
 from optdesk.sim.hedging import delta_hedge, gamma_pnl
@@ -167,33 +309,13 @@ standard errors, the formula tracking P&L path by path under GBM and Heston, hed
 put-call parity (exact to 1e-10 without dividends), short = −long exactly, and costs that are
 non-negative, grow with frequency and lower P&L by exactly their amount.
 
-## Market-making simulator (`optdesk.sim.market_maker`)
+### Market-making simulator (`optdesk.sim.market_maker`)
 
 | Module | What it does | Key design choice |
 | --- | --- | --- |
 | `surface/source.py` | One `VolSurface` interface (`implied_vol(k, T)`) with three sources: the synthetic SSVI surface, any SVI fit table (live snapshots), and a flat surface | The simulator never knows where vols come from; fitted slices interpolate total variance linearly in T, which can't create calendar arbitrage |
 | `market_maker.py` | Quotes bid/ask around theo on a book of SPY options, takes Poisson customer flow, tracks book delta, gamma and vega, delta-hedges every step, skews quotes by inventory, enforces vega and gamma limits, and splits P&L into spread capture, hedging and inventory | Avellaneda-Stoikov in *vol* space: after delta hedging the inventory risk is vega, so every quote shifts by `γ·σ_v²·H·(book vega)` vol points |
 | `mm_plot.py` | The 1,000-path study (skew vs no skew on the same market and the same customers, plus a risk-aversion sweep); `python -m optdesk.sim.mm_plot` | Common random numbers, so differences come from the quoting rule, not luck |
-
-A month of making markets in 12 SPY options (2-, 3- and 6-month expiries), on the synthetic
-surface with implied vols moving 10 points a year:
-
-![Market-making P&L attribution](docs/images/mm_attribution.png)
-
-Skewing quotes by inventory keeps the mean P&L (about $305k a month either way, ~103% of it
-spread capture) but cuts inventory risk by almost two thirds (std $35k → $14k) and total risk
-by 29% ($35.5k → $25.2k), because book vega mean-reverts instead of random-walking into the
-limit (average |vega| $10.4k → $3.0k per vol point).
-
-![Inventory](docs/images/mm_inventory.png)
-
-More charts: [one simulated month](docs/images/mm_path.png),
-[quote skew and the risk-aversion frontier](docs/images/mm_frontier.png).
-
-```powershell
-python -m optdesk.sim.mm_plot                              # synthetic surface (default)
-python -m optdesk.sim.mm_plot --ticker SPY --date 2026-10-19  # a saved snapshot's SVI fit
-```
 
 ```python
 from optdesk.sim.market_maker import Contract, QuoteParams, run_market_maker, simulate_market
@@ -215,13 +337,10 @@ realized = implied; both delta methods agreeing on a flat surface; vega and gamm
 binding; reproducibility from seeds; skewing cutting the spread of ending vega by over half;
 and a fitted SVI surface reproducing the analytic one's results.
 
-## Dashboard (`optdesk.app`)
+### Dashboard (`optdesk.app`)
 
-```powershell
-streamlit run src/optdesk/app/main.py
-```
-
-This opens a browser tab with four tabs, all driven by one market chosen in the sidebar:
+`streamlit run src/optdesk/app/main.py` opens a browser tab with four tabs, all driven by one
+market chosen in the sidebar:
 
 | Tab | What you can do | Built on |
 | --- | --- | --- |
@@ -232,21 +351,20 @@ This opens a browser tab with four tabs, all driven by one market chosen in the 
 
 | Module | What it does | Key design choice |
 | --- | --- | --- |
-| `surface/market.py` | One `MarketData` bundle (spot, r, q, pricing surface, SVI fits, clean quotes) from the synthetic market or any saved snapshot; `available_sources()` lists them | The app only sees a `MarketData`, so live data is a dropdown choice: Monday's snapshot appears on its own once saved, no code changes. For snapshots `q` is backed out of the parity forward, so theo uses the options' own carry |
+| `surface/market.py` | One `MarketData` bundle (spot, r, q, pricing surface, SVI fits, clean quotes) from the synthetic market or any saved snapshot; `available_sources()` lists them | The app only sees a `MarketData`, so live data is a dropdown choice: a new snapshot appears on its own once saved, no code changes. For snapshots `q` is backed out of the parity forward, so theo uses the options' own carry |
 | `pricing/portfolio.py` | Book Greeks in desk units ($ per vol point, $ per day, $ delta per 1%), share hedge, scenario grid, Taylor estimate | Scenarios reprice every option (full revaluation, parallel sticky-strike vol shocks) instead of trusting the Greeks for large moves |
-| `sim/lab.py` | The M4 hedging and market-making experiments with every parameter exposed, returning chart-ready results | The app holds no math: percentiles, average P&L paths and quote curves are computed and tested here |
+| `sim/lab.py` | The hedging and market-making experiments with every parameter exposed, returning chart-ready results | The app holds no math: percentiles, average P&L paths and quote curves are computed and tested here |
 | `app/` | `main.py` (sidebar and tabs), `views/` (one file per tab, layout only), `charts.py` (Plotly figures) | The market and every simulation are cached by their inputs, so moving between tabs is instant; simulation controls sit in forms and run when you press **Run simulation** |
 
-The market is the **synthetic SPY surface** for now (its pricing surface is the known SSVI
-truth). Snapshots saved by `python -m optdesk.data.fetch` under `data/snapshots/` show up in
-the sidebar's **Data source** list; set `OPTDESK_SNAPSHOT_ROOT` to read them from elsewhere.
+Snapshots saved by `python -m optdesk.data.fetch` under `data/snapshots/` show up in the
+sidebar's **Data source** list; set `OPTDESK_SNAPSHOT_ROOT` to read them from elsewhere.
 
 How it's tested: the portfolio Greeks equal the closed-form Greeks times size, call minus put
 is a forward (delta `e^(−qT)`, zero gamma and vega), finite differences of the scenario grid
 recover delta, gamma and vega, and the Taylor error shrinks 8× when the move halves; the
 market sources recover spot, rates, the parity-implied dividend yield and the true surface from
-a saved snapshot; the labs reproduce the M4 answer keys (zero mean and Derman-Kamal std at fair
-vol, `BS(realized) − BS(implied)` at the wrong vol, buckets summing to total); and
-`streamlit.testing.v1.AppTest` runs the real app headless: every tab renders, the hedging
-widgets rerun the simulation, the delta-hedge checkbox flattens delta, and a saved snapshot
-appears in the dropdown and loads.
+a saved snapshot; the labs reproduce the hedging and market-making answer keys (zero mean and
+Derman-Kamal std at fair vol, `BS(realized) − BS(implied)` at the wrong vol, buckets summing to
+total); and `streamlit.testing.v1.AppTest` runs the real app headless: every tab renders, the
+hedging widgets rerun the simulation, the delta-hedge checkbox flattens delta, and a saved
+snapshot appears in the dropdown and loads.

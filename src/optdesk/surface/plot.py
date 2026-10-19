@@ -22,7 +22,8 @@ Command line
 ------------
 ``python -m optdesk.surface.plot`` fits the synthetic market and writes ``surface.html`` and
 ``smiles.html`` to ``data/plots/``. Add ``--ticker SPY --date 2026-10-19`` to use a saved
-snapshot instead. It also prints the fit and arbitrage table.
+snapshot instead. It also prints the fit and arbitrage table. ``--png docs/images/surface.png``
+also saves a static image (matplotlib) for the README.
 """
 
 from __future__ import annotations
@@ -38,7 +39,7 @@ from plotly.subplots import make_subplots
 
 from optdesk.surface.svi import SVIParams
 
-__all__ = ["main", "smile_figure", "surface_figure"]
+__all__ = ["main", "smile_figure", "surface_figure", "surface_png_figure"]
 
 FIT_COLOR = "#2a78d6"  # categorical slot 1 (blue): the model
 MARKET_COLOR = "#eb6834"  # categorical slot 2 (orange): the market
@@ -71,6 +72,22 @@ def _slice_ranges(fits: pd.DataFrame, clean: pd.DataFrame | None) -> list[tuple[
     return ranges
 
 
+def _surface_grid(fits: pd.DataFrame, clean: pd.DataFrame | None, n_z: int):
+    """Sorted fits, the ``z`` axis, ATM std devs, ``k`` grid and vol (%) grid, NaN = not drawn."""
+    fits = fits.sort_values("T").reset_index(drop=True)
+    sd = np.array([_atm_sd(row) for _, row in fits.iterrows()])
+    k_ranges = _slice_ranges(fits, clean)
+    z_ranges = [(lo / s, hi / s) for (lo, hi), s in zip(k_ranges, sd, strict=True)]
+    z = np.linspace(min(lo for lo, _ in z_ranges), max(hi for _, hi in z_ranges), n_z)
+    k = np.outer(sd, z)  # log-moneyness at each grid point (rows = expiries)
+    vol = np.full_like(k, np.nan)
+    for i, row in fits.iterrows():
+        lo, hi = z_ranges[i]
+        inside = (z >= lo) & (z <= hi)
+        vol[i, inside] = 100 * SVIParams.from_mapping(row).implied_vol(k[i, inside], row["T"])
+    return fits, z, sd, k, vol
+
+
 def surface_figure(
     fits: pd.DataFrame, clean: pd.DataFrame | None = None, n_z: int = 121
 ) -> go.Figure:
@@ -80,18 +97,7 @@ def surface_figure(
     standard deviations, see module notes). If ``clean`` (the cleaned chain) is given, each
     slice is drawn only over its quoted range and the quotes are shown as dots.
     """
-    fits = fits.sort_values("T").reset_index(drop=True)
-    sd = np.array([_atm_sd(row) for _, row in fits.iterrows()])
-    k_ranges = _slice_ranges(fits, clean)
-    z_ranges = [(lo / s, hi / s) for (lo, hi), s in zip(k_ranges, sd, strict=True)]
-    z = np.linspace(min(lo for lo, _ in z_ranges), max(hi for _, hi in z_ranges), n_z)
-    k = np.outer(sd, z)  # log-moneyness at each grid point (rows = expiries)
-    vol = np.full_like(k, np.nan)  # NaN = not drawn
-    for i, row in fits.iterrows():
-        lo, hi = z_ranges[i]
-        inside = (z >= lo) & (z <= hi)
-        vol[i, inside] = 100 * SVIParams.from_mapping(row).implied_vol(k[i, inside], row["T"])
-
+    fits, z, sd, k, vol = _surface_grid(fits, clean, n_z)
     fig = go.Figure(
         go.Surface(
             x=z,
@@ -196,6 +202,52 @@ def smile_figure(fits: pd.DataFrame, clean: pd.DataFrame, cols: int = 3) -> go.F
     return fig
 
 
+def surface_png_figure(fits: pd.DataFrame, clean: pd.DataFrame, n_z: int = 121):
+    """Static (matplotlib) version for the README: 3D surface left, every smile overlaid right.
+
+    Same grid and coordinates as ``surface_figure``. Plotly can only write PNGs with kaleido and
+    a headless Chrome, so the README image is drawn with matplotlib, like the M4 charts. The
+    right panel puts all smiles on one ``z`` axis, light (short expiry) to dark (long), with
+    the market quotes as dots, so a reader sees the skew flatten with maturity at a glance.
+    """
+    from matplotlib import rc_context
+    from matplotlib.colors import LinearSegmentedColormap
+    from matplotlib.figure import Figure
+
+    from optdesk.sim.plot import INK, INK_2, STYLE  # one chart style across the README
+
+    fits, z, sd, _, vol = _surface_grid(fits, clean, n_z)
+    cmap = LinearSegmentedColormap.from_list("vol", [c for _, c in SURFACE_SCALE])
+    shades = cmap(np.linspace(0.2, 1.0, len(fits)))
+    with rc_context(STYLE):
+        fig = Figure(figsize=(12, 4.8))
+        left = fig.add_subplot(1, 2, 1, projection="3d")
+        zz, tt = np.meshgrid(z, fits["T"])
+        left.plot_surface(
+            zz, tt, np.ma.masked_invalid(vol), cmap=cmap, linewidth=0.2, edgecolor="white"
+        )
+        left.set_xlabel("ATM std devs  k / (σ_ATM √T)", color=INK_2)
+        left.set_ylabel("Expiry T (years)", color=INK_2)
+        left.set_zlabel("Implied vol (%)", color=INK_2)
+        left.view_init(elev=22, azim=-62)  # short expiries in front, like the Plotly camera
+        left.set_title("SVI surface", loc="left")
+
+        right = fig.add_subplot(1, 2, 2)
+        for i, row in fits.iterrows():
+            quotes = clean[clean["expiry"] == row["expiry"]]
+            right.plot(z, vol[i], color=shades[i], label=f"{row['T'] * 365:.0f}d")
+            z_quotes = quotes["k"] / sd[i]
+            right.plot(z_quotes, 100 * quotes["iv"], "o", ms=3, color=shades[i], alpha=0.7)
+        right.set_xlabel("ATM std devs  k / (σ_ATM √T)")
+        right.set_ylabel("Implied vol (%)")
+        right.set_title("Smiles by expiry: SVI fit (lines) vs quotes (dots)")
+        right.legend(title="Expiry", ncols=2, loc="upper right")
+        title = "Implied volatility surface, SVI fit per expiry"
+        fig.suptitle(title, x=0.01, ha="left", color=INK, fontsize=12)
+        fig.tight_layout()
+    return fig
+
+
 def main(argv: list[str] | None = None) -> int:
     """Fit a surface (synthetic, or a saved snapshot), print the checks and write the plots."""
     from optdesk.data.clean import clean_chain
@@ -208,6 +260,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--european", action="store_true", help="options are European (^SPX)")
     parser.add_argument("--root", type=Path, default=None, help="snapshot folder (with --ticker)")
     parser.add_argument("--out", type=Path, default=Path("data/plots"), help="output folder")
+    parser.add_argument("--png", type=Path, default=None, help="also save a static PNG here")
     args = parser.parse_args(argv)
 
     if args.ticker:
@@ -237,6 +290,10 @@ def main(argv: list[str] | None = None) -> int:
     surface_figure(fits, clean).write_html(args.out / "surface.html", include_plotlyjs=True)
     smile_figure(fits, clean).write_html(args.out / "smiles.html", include_plotlyjs=True)
     print(f"\nwrote {args.out / 'surface.html'} and {args.out / 'smiles.html'}")
+    if args.png:
+        args.png.parent.mkdir(parents=True, exist_ok=True)
+        surface_png_figure(fits, clean).savefig(args.png, dpi=150)
+        print(f"wrote {args.png}")
     return 0
 
 
