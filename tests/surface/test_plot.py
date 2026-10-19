@@ -6,9 +6,17 @@ command line runs end to end on the synthetic market and writes both HTML files.
 """
 
 import numpy as np
+import pandas as pd
 import pytest
 
-from optdesk.surface.plot import main, smile_figure, surface_figure, surface_png_figure
+from optdesk.surface import plot
+from optdesk.surface.plot import (
+    main,
+    png_slices,
+    smile_figure,
+    surface_figure,
+    surface_png_figure,
+)
 from optdesk.surface.svi import SVIParams
 
 
@@ -65,6 +73,37 @@ def test_static_png_matches_the_interactive_surface(market_fits, market_clean):
         np.testing.assert_allclose(np.asarray(line.get_ydata(), dtype=float), interactive[i])
     dots = fig.axes[1].get_lines()[1::2]
     assert sum(len(d.get_ydata()) for d in dots) == len(market_clean)
+
+
+def test_png_slices_on_a_live_style_chain():
+    """31 expiries from 1 day to 2.3 years (like SPY): drop under a week, keep 8 spread in log T."""
+    days = [1, 2, 3, 4, 7, 8, 9, 10, 11, 18, 25, 32, 39, 42, 60, 73, 88, 102, 123, 130, 151,
+            163, 241, 254, 333, 346, 424, 459, 606, 788, 823]  # fmt: skip
+    fits = pd.DataFrame({"T": np.array(days[::-1]) / 365, "expiry": range(len(days))})
+    picked = png_slices(fits)
+    assert len(picked) == plot.PNG_MAX_SLICES
+    assert picked["T"].is_monotonic_increasing
+    assert picked["T"].iloc[0] == 7 / 365 and picked["T"].iloc[-1] == 823 / 365  # both ends
+    gaps = np.diff(np.log(picked["T"]))
+    assert gaps.max() < 2.5 * gaps.min()  # roughly even in log maturity
+
+
+def test_png_slices_keeps_short_chains_whole():
+    few = pd.DataFrame({"T": [2 / 365, 30 / 365, 0.5], "expiry": range(3)})
+    assert list(png_slices(few)["T"]) == [30 / 365, 0.5]  # only the 2-day one goes
+    all_short = pd.DataFrame({"T": [1 / 365, 2 / 365], "expiry": range(2)})
+    assert len(png_slices(all_short)) == 2  # nothing a week out: keep everything
+
+
+def test_png_shows_only_quotes_inside_the_z_window(market_fits, market_clean, monkeypatch):
+    monkeypatch.setattr(plot, "PNG_Z_RANGE", (-1.0, 1.0))
+    fig = surface_png_figure(market_fits, market_clean)
+    smiles, dots = fig.axes[1].get_lines()[0::2], fig.axes[1].get_lines()[1::2]
+    for line in dots:
+        z = np.asarray(line.get_xdata(), dtype=float)
+        assert len(z) and z.min() >= -1.0 and z.max() <= 1.0
+    assert sum(len(d.get_xdata()) for d in dots) < len(market_clean)
+    assert len(smiles) == len(market_fits)
 
 
 def test_command_line_writes_both_plots(tmp_path, capsys):

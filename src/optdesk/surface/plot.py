@@ -39,7 +39,7 @@ from plotly.subplots import make_subplots
 
 from optdesk.surface.svi import SVIParams
 
-__all__ = ["main", "smile_figure", "surface_figure", "surface_png_figure"]
+__all__ = ["main", "png_slices", "smile_figure", "surface_figure", "surface_png_figure"]
 
 FIT_COLOR = "#2a78d6"  # categorical slot 1 (blue): the model
 MARKET_COLOR = "#eb6834"  # categorical slot 2 (orange): the market
@@ -52,6 +52,10 @@ SURFACE_SCALE = [  # one-hue sequential blue, light (low vol) to dark (high vol)
 ]
 TEMPLATE = "plotly_white"  # light background with a recessive grid
 K_MARGIN = 0.02  # how far past the quoted strikes each slice is drawn (in k)
+# The static PNG shows a readable subset (see surface_png_figure); the HTML shows everything.
+PNG_MAX_SLICES = 8
+PNG_MIN_DAYS = 7
+PNG_Z_RANGE = (-6.0, 3.0)  # ATM std devs
 
 
 def _atm_sd(row: pd.Series) -> float:
@@ -202,12 +206,37 @@ def smile_figure(fits: pd.DataFrame, clean: pd.DataFrame, cols: int = 3) -> go.F
     return fig
 
 
-def surface_png_figure(fits: pd.DataFrame, clean: pd.DataFrame, n_z: int = 121):
-    """Static (matplotlib) version for the README: 3D surface left, every smile overlaid right.
+def png_slices(fits: pd.DataFrame) -> pd.DataFrame:
+    """The expiries the static image draws: a week or more out, at most ``PNG_MAX_SLICES``.
 
-    Same grid and coordinates as ``surface_figure``. Plotly can only write PNGs with kaleido and
-    a headless Chrome, so the README image is drawn with matplotlib, like the M4 charts. The
-    right panel puts all smiles on one ``z`` axis, light (short expiry) to dark (long), with
+    Why a subset: a live SPY chain has 30+ expiries, including options a day or two from
+    expiry. Thirty overlaid smiles and a thirty-entry legend are unreadable. And on a 1-day
+    option a strike 5% below spot is ~20 ATM standard deviations away, which stretches the
+    shared ``z`` axis until the near-the-money region (where the market trades) is a sliver.
+    So the image keeps expiries at least ``PNG_MIN_DAYS`` out and, if there are still too many,
+    the ones nearest to evenly spaced points in log maturity (short expiries are bunched
+    together, long ones far apart). The interactive HTML still shows every expiry.
+    If nothing is a week out, every expiry is kept.
+    """
+    fits = fits.sort_values("T").reset_index(drop=True)
+    later = fits[fits["T"] * 365 >= PNG_MIN_DAYS].reset_index(drop=True)
+    fits = later if len(later) else fits
+    if len(fits) <= PNG_MAX_SLICES:
+        return fits
+    targets = np.geomspace(fits["T"].iloc[0], fits["T"].iloc[-1], PNG_MAX_SLICES)
+    log_T = np.log(fits["T"].to_numpy())
+    picks = sorted({int(np.abs(log_T - np.log(t)).argmin()) for t in targets})
+    return fits.iloc[picks].reset_index(drop=True)
+
+
+def surface_png_figure(fits: pd.DataFrame, clean: pd.DataFrame, n_z: int = 121):
+    """Static (matplotlib) version for the README: 3D surface left, smiles overlaid right.
+
+    Same grid and coordinates as ``surface_figure``, on the readable subset of expiries from
+    ``png_slices`` and the strikes within ``PNG_Z_RANGE`` ATM std devs (where the market
+    trades; deeper quotes are in the HTML). Plotly can only write PNGs with kaleido and a
+    headless Chrome, so the README image is drawn with matplotlib, like the M4 charts. The
+    right panel puts the smiles on one ``z`` axis, light (short expiry) to dark (long), with
     the market quotes as dots, so a reader sees the skew flatten with maturity at a glance.
     """
     from matplotlib import rc_context
@@ -216,6 +245,10 @@ def surface_png_figure(fits: pd.DataFrame, clean: pd.DataFrame, n_z: int = 121):
 
     from optdesk.sim.plot import INK, INK_2, STYLE  # one chart style across the README
 
+    fits = png_slices(fits)
+    atm_sd = {row["expiry"]: _atm_sd(row) for _, row in fits.iterrows()}
+    z_quotes = clean["k"] / clean["expiry"].map(atm_sd)  # NaN for expiries not drawn
+    clean = clean[z_quotes.between(*PNG_Z_RANGE)]
     fits, z, sd, _, vol = _surface_grid(fits, clean, n_z)
     cmap = LinearSegmentedColormap.from_list("vol", [c for _, c in SURFACE_SCALE])
     shades = cmap(np.linspace(0.2, 1.0, len(fits)))
