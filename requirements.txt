@@ -1,7 +1,8 @@
 # Runtime dependencies for hosting the dashboard (Streamlit Community Cloud reads this file).
 # Pinned to the versions the test suite passes with, so the hosted app runs the same code as
-# the laptop. pyproject.toml keeps the looser ">=" ranges for local installs;
-# tests/test_package.py checks that every dependency listed there is also pinned here.
+# the laptop. Streamlit alone takes a patch range: 1.66.x releases are bug fixes only, so the
+# server picks those up, but never an untested 1.67. pyproject.toml keeps the looser ">="
+# ranges for local installs; tests/test_package.py checks every dependency there is here.
 numpy==2.5.4
 scipy==1.18.1
 pandas==3.0.6
@@ -9,7 +10,7 @@ pyarrow==26.0.0
 yfinance==1.7.0
 plotly==7.1.0
 matplotlib==3.11.2
-streamlit==1.66.0
+streamlit>=1.66.1,<1.67
 
 # The optdesk package itself (src/ layout), so `import optdesk` works on a fresh server.
 -e .

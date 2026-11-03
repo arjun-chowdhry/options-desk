@@ -8,6 +8,7 @@
 - ``available_sources`` lists the synthetic market first, then every saved snapshot; with no
   saved snapshots, the committed demo snapshot comes first.
 - The demo snapshot is small, fits cleanly, and is what a failed source falls back to.
+- Loaders build through the ``fit=`` hook (the app passes a cached fitter), once per load.
 """
 
 from pathlib import Path
@@ -22,6 +23,7 @@ from optdesk.surface.market import (
     available_sources,
     carry_from_fits,
     demo_source,
+    fit_quotes,
     load_market,
     load_market_or_demo,
     snapshot_market,
@@ -117,8 +119,9 @@ def demo_market():
 
 
 def test_demo_snapshot_is_committed_small_and_fits(demo_market):
-    files = list(DEMO_ROOT.glob("*/*.parquet"))
+    files = [f for f in DEMO_ROOT.glob("*/*.parquet") if not f.name.endswith(".fit.parquet")]
     assert len(files) == 1 and files[0].stat().st_size < 1_000_000  # small enough for git
+    assert (DEMO_ROOT / "SPY" / "2026-10-22.fit.parquet").exists()  # its saved fit
     assert demo_source(DEMO_ROOT) == DEMO
     assert demo_market.label == "SPY 2026-10-22" and not demo_market.synthetic
     fits = demo_market.fits
@@ -162,3 +165,24 @@ def test_successful_loads_report_no_fallback(snapshot_root):
     assert demo.demo_date == "2026-10-22" and demo.error is None
     with pytest.raises(ValueError, match="demo_root"):
         load_market(DEMO)
+
+
+def test_loaders_fit_through_the_injected_fitter(snapshot_root, tmp_path):
+    calls = []
+
+    def counting(raw, curve, american):
+        calls.append((len(raw), american))
+        clean, fits = fit_quotes(raw, curve, american)
+        return clean, fits.assign(rmse=0.123)  # tagged, so we can see its output was used
+
+    m = load_market(
+        MarketSource("snapshot", "SPY", "2026-10-16"), snapshot_root, american=False, fit=counting
+    )
+    assert len(calls) == 1 and calls[0][1] is False  # once, with the caller's american
+    assert (m.fits["rmse"] == 0.123).all()
+    # the fallback to the demo loads the demo's saved fit, so the fitter isn't needed
+    calls.clear()
+    broken = MarketSource("snapshot", "SPY", "2026-10-01")
+    loaded = load_market_or_demo(broken, tmp_path / "none", demo_root=DEMO_ROOT, fit=counting)
+    assert loaded.demo_date == "2026-10-22" and calls == []
+    assert len(loaded.market.fits) == 28 and (loaded.market.fits["rmse"] != 0.123).all()
