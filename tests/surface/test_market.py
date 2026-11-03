@@ -8,6 +8,7 @@
 - ``available_sources`` lists the synthetic market first, then every saved snapshot; with no
   saved snapshots, the committed demo snapshot comes first.
 - The demo snapshot is small, fits cleanly, and is what a failed source falls back to.
+- Loaders build through the ``fit=`` hook (the app passes a cached fitter), once per load.
 """
 
 from pathlib import Path
@@ -22,6 +23,7 @@ from optdesk.surface.market import (
     available_sources,
     carry_from_fits,
     demo_source,
+    fit_quotes,
     load_market,
     load_market_or_demo,
     snapshot_market,
@@ -162,3 +164,23 @@ def test_successful_loads_report_no_fallback(snapshot_root):
     assert demo.demo_date == "2026-10-22" and demo.error is None
     with pytest.raises(ValueError, match="demo_root"):
         load_market(DEMO)
+
+
+def test_loaders_fit_through_the_injected_fitter(snapshot_root, tmp_path):
+    calls = []
+
+    def counting(raw, curve, american):
+        calls.append((len(raw), american))
+        clean, fits = fit_quotes(raw, curve, american)
+        return clean, fits.assign(rmse=0.123)  # tagged, so we can see its output was used
+
+    m = load_market(
+        MarketSource("snapshot", "SPY", "2026-10-16"), snapshot_root, american=False, fit=counting
+    )
+    assert len(calls) == 1 and calls[0][1] is False  # once, with the caller's american
+    assert (m.fits["rmse"] == 0.123).all()
+    # the fallback to the demo goes through the same fitter, so it is cached too
+    calls.clear()
+    broken = MarketSource("snapshot", "SPY", "2026-10-01")
+    loaded = load_market_or_demo(broken, tmp_path / "none", demo_root=DEMO_ROOT, fit=counting)
+    assert loaded.demo_date == "2026-10-22" and calls[0][1] is True and len(calls) == 1

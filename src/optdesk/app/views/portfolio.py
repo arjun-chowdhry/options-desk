@@ -47,14 +47,31 @@ def render(market: MarketData) -> None:
         "doesn't."
     )
     top = st.columns([2, 1])
-    preset = top[0].selectbox("Start from", list(PRESETS))
-    hedge = top[1].checkbox("Delta-hedge with shares", value=False)
+    preset = top[0].selectbox(
+        "Start from", list(PRESETS), key="pf_start_from", persist_state="page"
+    )
+    hedge = top[1].checkbox(
+        "Delta-hedge with shares",
+        value=False,
+        key="pf_delta_hedge_with_shares",
+        persist_state="page",
+    )
 
-    book = as_frame(preset_book(preset, market.spot, market.r, market.q))
+    # The table's edits must survive switching to another tab and back. data_editor has no
+    # persist_state, and its state is dropped while the tab is closed, so we keep the last
+    # edited table ourselves and start the editor from it when the tab opens again. The
+    # editor applies its edits on top of the table it started from, so that starting table
+    # (`base`) stays fixed while the editor is on screen, or edits would be applied twice.
+    editor = f"book::{preset}::{market.key}"  # a new preset or market starts a fresh table
+    base, last = f"{editor}::base", f"{editor}::last"
+    if editor not in st.session_state:  # first visit, or the tab was just reopened
+        st.session_state[base] = st.session_state.get(
+            last, as_frame(preset_book(preset, market.spot, market.r, market.q))
+        )
     edited = st.data_editor(
-        book,
+        st.session_state[base],
         num_rows="dynamic",
-        key=f"book::{preset}::{market.key}",  # a new preset or market starts a fresh table
+        key=editor,
         column_config={
             "type": st.column_config.SelectboxColumn("Type", options=["call", "put"]),
             "strike": st.column_config.NumberColumn("Strike", min_value=0.01, format="%.2f"),
@@ -64,6 +81,7 @@ def render(market: MarketData) -> None:
         },
         hide_index=True,
     )
+    st.session_state[last] = edited
     try:
         positions = positions_from_frame(edited)
     except ValueError as err:

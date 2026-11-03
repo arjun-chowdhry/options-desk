@@ -192,7 +192,9 @@ The time is the PC's local time, so set it to whatever is 3:15pm in New York.
 gitignored, so one real day is committed for hosting: `data/demo/SPY/2026-10-22.parquet`
 (28 expiries out to 2.25 years, about 300 KB). With no saved snapshots, the app opens on it.
 If the chosen snapshot fails to load, the app falls back to it as well. Either way, a
-"Demo snapshot from 2026-10-22" banner shows above the tabs. The headline numbers in this
+"Demo snapshot from 2026-10-22" banner shows above the tabs. The first visit after the app
+wakes up fits that day's surface (about 25 seconds on a laptop, longer on the free tier);
+after that it is cached, and only the open tab runs. The headline numbers in this
 README come from the 2026-10-19 chain, and the hosted demo shows 2026-10-22, so they differ
 slightly.
 
@@ -447,7 +449,7 @@ market chosen in the sidebar:
 | `surface/market.py` | One `MarketData` bundle (spot, r, q, pricing surface, SVI fits, clean quotes) from the synthetic market or any saved snapshot; `available_sources()` lists them | The app only sees a `MarketData`, so live data is a dropdown choice: a new snapshot appears on its own once saved, no code changes. For snapshots `q` is backed out of the parity forward, so theo uses the options' own carry |
 | `pricing/portfolio.py` | Book Greeks in desk units ($ per vol point, $ per day, $ delta per 1%), share hedge, scenario grid, Taylor estimate | Scenarios reprice every option (full revaluation, parallel sticky-strike vol shocks) instead of trusting the Greeks for large moves |
 | `sim/lab.py` | The hedging and market-making experiments with every parameter exposed, returning chart-ready results | The app holds no math: percentiles, average P&L paths and quote curves are computed and tested here |
-| `app/` | `main.py` (sidebar and tabs), `views/` (one file per tab, layout only), `charts.py` (Plotly figures) | The market and every simulation are cached by their inputs, so moving between tabs is instant; simulation controls sit in forms and run when you press **Run simulation** |
+| `app/` | `main.py` (sidebar and tabs), `views/` (one file per tab, layout only), `charts.py` (Plotly figures) | Only the open tab runs (lazy `st.tabs`), and widgets keep their values while their tab is closed; the SVI fits (`st.cache_data`), the market and every simulation are cached by their inputs, so a tab is slow only the first time; simulation controls sit in forms and run when you press **Run simulation** |
 
 Snapshots saved by `python -m optdesk.data.fetch` under `data/snapshots/` show up in the
 sidebar's **Data source** list; set `OPTDESK_SNAPSHOT_ROOT` to read them from elsewhere.
@@ -458,6 +460,6 @@ recover delta, gamma and vega, and the Taylor error shrinks 8× when the move ha
 market sources recover spot, rates, the parity-implied dividend yield and the true surface from
 a saved snapshot; the labs reproduce the hedging and market-making answer keys (zero mean and
 Derman-Kamal std at fair vol, `BS(realized) − BS(implied)` at the wrong vol, buckets summing to
-total); and `streamlit.testing.v1.AppTest` runs the real app headless: every tab renders, the
-hedging widgets rerun the simulation, the delta-hedge checkbox flattens delta, and a saved
+total); and `streamlit.testing.v1.AppTest` runs the real app headless: every tab renders (and
+only when open), widget values and book edits survive switching tabs, the hedging widgets rerun the simulation, the delta-hedge checkbox flattens delta, and a saved
 snapshot appears in the dropdown and loads.

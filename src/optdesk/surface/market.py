@@ -40,6 +40,7 @@ which a quoted dividend yield (backward-looking and lumpy for SPY) would not.
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -62,6 +63,7 @@ __all__ = [
     "available_sources",
     "carry_from_fits",
     "demo_source",
+    "fit_quotes",
     "load_market",
     "load_market_or_demo",
     "snapshot_market",
@@ -130,17 +132,30 @@ def carry_from_fits(fits: pd.DataFrame, spot: float, curve: RateCurve) -> tuple[
     return r, q
 
 
-def _fit(raw: pd.DataFrame, curve: RateCurve, american: bool) -> tuple[pd.DataFrame, pd.DataFrame]:
+def fit_quotes(
+    raw: pd.DataFrame, curve: RateCurve, american: bool
+) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """Clean a raw chain and fit SVI per expiry: ``(clean quotes, fits with arbitrage checks)``.
+
+    This is the slow step of building a market (for the 28-expiry demo, ~25 s on a laptop:
+    roughly half de-Americanizing every quote on a CRR tree, half the SVI fits); everything
+    else takes milliseconds. So it is the one step worth caching, and the loaders below take
+    it as ``fit=``: the app passes a cached copy (``st.cache_data``) and the math stays here,
+    with no Streamlit import.
+    """
     clean = clean_chain(raw, curve, american=american)
     return clean, check_surface(fit_chain(clean))
 
 
-def synthetic_market(seed: int = 0) -> MarketData:
+Fitter = Callable[[pd.DataFrame, RateCurve, bool], tuple[pd.DataFrame, pd.DataFrame]]
+
+
+def synthetic_market(seed: int = 0, *, fit: Fitter = fit_quotes) -> MarketData:
     """The synthetic SPY market: true SSVI surface for pricing, fitted SVI for display."""
     from optdesk.surface.synthetic import DIV_YIELD, SPOT, synthetic_chain
 
     market = synthetic_chain(seed=seed)
-    clean, fits = _fit(market.raw, market.curve, american=True)
+    clean, fits = fit(market.raw, market.curve, True)
     r = float(market.curve(CARRY_TENOR))
     return MarketData(
         label="Synthetic SPY",
@@ -156,11 +171,16 @@ def synthetic_market(seed: int = 0) -> MarketData:
 
 
 def snapshot_market(
-    ticker: str, date: str, root: Path | str = DEFAULT_ROOT, *, american: bool = True
+    ticker: str,
+    date: str,
+    root: Path | str = DEFAULT_ROOT,
+    *,
+    american: bool = True,
+    fit: Fitter = fit_quotes,
 ) -> MarketData:
     """A saved snapshot, cleaned and fitted. ``american=False`` for European options (^SPX)."""
     raw, curve = load_snapshot(ticker, date, root)
-    clean, fits = _fit(raw, curve, american=american)
+    clean, fits = fit(raw, curve, american)
     if fits.empty:
         raise ValueError(f"no expiry of {ticker} {date} had enough clean quotes to fit")
     spot = float(raw["spot"].iloc[0])
@@ -218,16 +238,17 @@ def load_market(
     *,
     american: bool = True,
     demo_root: Path | str | None = None,
+    fit: Fitter = fit_quotes,
 ) -> MarketData:
     """Load whichever source was chosen (a ``"demo"`` source is read from ``demo_root``)."""
     if source.kind == "synthetic":
-        return synthetic_market()
+        return synthetic_market(fit=fit)
     if source.kind == "snapshot":
-        return snapshot_market(source.ticker, source.date, root, american=american)
+        return snapshot_market(source.ticker, source.date, root, american=american, fit=fit)
     if source.kind == "demo":
         if demo_root is None:
             raise ValueError("a demo source needs demo_root")
-        return snapshot_market(source.ticker, source.date, demo_root, american=american)
+        return snapshot_market(source.ticker, source.date, demo_root, american=american, fit=fit)
     raise ValueError(f"unknown source kind {source.kind!r}")
 
 
@@ -246,6 +267,7 @@ def load_market_or_demo(
     *,
     american: bool = True,
     demo_root: Path | str | None = None,
+    fit: Fitter = fit_quotes,
 ) -> LoadedMarket:
     """Load ``source``; if that fails for any reason, load the demo snapshot instead.
 
@@ -256,10 +278,10 @@ def load_market_or_demo(
     """
     demo = demo_source(demo_root)
     try:
-        market = load_market(source, root, american=american, demo_root=demo_root)
+        market = load_market(source, root, american=american, demo_root=demo_root, fit=fit)
     except Exception as exc:
         if demo is None or source == demo:
             raise
-        market = load_market(demo, root, american=True, demo_root=demo_root)  # SPY: American
+        market = load_market(demo, root, american=True, demo_root=demo_root, fit=fit)  # SPY
         return LoadedMarket(market, demo.date, f"{source.label}: {exc}")
     return LoadedMarket(market, source.date if source.kind == "demo" else None)

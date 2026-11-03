@@ -27,7 +27,11 @@ def test_requirements_pin_every_dependency():
         for line in (repo / "requirements.txt").read_text().splitlines()
         if line.strip() and not line.startswith("#")
     ]
-    pinned = {line.split("==")[0].lower() for line in lines if "==" in line}
+    # every requirement is an exact pin or has an upper bound: the server never installs an
+    # untested major or minor version
+    bounded = [line for line in lines if line != "-e ." and ("==" in line or "<" in line)]
+    assert len(bounded) == len(lines) - 1, lines
+    pinned = {re.split(r"[<>=!~\[ ]", line)[0].lower() for line in bounded}
     for dep in deps:
         assert re.split(r"[<>=!~\[ ]", dep)[0].lower() in pinned, dep
     assert "-e ." in lines  # the package itself

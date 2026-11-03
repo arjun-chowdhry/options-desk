@@ -45,22 +45,88 @@ def render(market: MarketData) -> None:
                 [0.0, 1e-5, 2e-5, 5e-5, 1e-4, 2e-4],
                 value=5e-5,
                 format_func=lambda g: f"{g:g}",
+                key="mm_risk_aversion_per",
+                persist_state="page",
             )
-            fill_decay = st.slider("Fill decay k (per 1.00 vol)", 50.0, 500.0, 200.0, 10.0)
-            arrival = st.slider("Customer arrivals A (per year, per side)", 200, 3000, 1000, 100)
-            trade_size = st.select_slider("Trade size (contracts)", [1, 5, 10, 20, 50], value=10)
+            fill_decay = st.slider(
+                "Fill decay k (per 1.00 vol)",
+                50.0,
+                500.0,
+                200.0,
+                10.0,
+                key="mm_fill_decay_k_per_1_00_vol",
+                persist_state="page",
+            )
+            arrival = st.slider(
+                "Customer arrivals A (per year, per side)",
+                200,
+                3000,
+                1000,
+                100,
+                key="mm_customer_arrivals_a_per_year_per_side",
+                persist_state="page",
+            )
+            trade_size = st.select_slider(
+                "Trade size (contracts)",
+                [1, 5, 10, 20, 50],
+                value=10,
+                key="mm_trade_size_contracts",
+                persist_state="page",
+            )
         with world:
             st.markdown("**Market**")
-            vol_of_vol = st.slider("Vol of vol (vol pts per √year)", 2, 30, 10)
-            corr = st.slider("Spot-vol correlation", -0.95, 0.5, -0.7, 0.05)
-            hedge_bp = st.slider("Hedge cost (bp)", 0.0, 5.0, 1.0, 0.5)
+            vol_of_vol = st.slider(
+                "Vol of vol (vol pts per √year)",
+                2,
+                30,
+                10,
+                key="mm_vol_of_vol_vol_pts_per_year",
+                persist_state="page",
+            )
+            corr = st.slider(
+                "Spot-vol correlation",
+                -0.95,
+                0.5,
+                -0.7,
+                0.05,
+                key="mm_spot_vol_correlation",
+                persist_state="page",
+            )
+            hedge_bp = st.slider(
+                "Hedge cost (bp)", 0.0, 5.0, 1.0, 0.5, key="mm_hedge_cost_bp", persist_state="page"
+            )
         with run:
             st.markdown("**Limits and run**")
-            vega_limit = st.slider("Vega limit ($k per vol pt)", 5, 100, 25, 5)
-            gamma_limit = st.slider("Gamma limit ($k delta per 1%)", 100, 3000, 1000, 100)
-            days = st.slider("Trading days", 5, 21, 21)
-            n_paths = st.select_slider("Paths", [50, 100, 200, 500], value=200)
-            seed = st.number_input("Random seed", min_value=0, value=2026, step=1)
+            vega_limit = st.slider(
+                "Vega limit ($k per vol pt)",
+                5,
+                100,
+                25,
+                5,
+                key="mm_vega_limit_k_per_vol_pt",
+                persist_state="page",
+            )
+            gamma_limit = st.slider(
+                "Gamma limit ($k delta per 1%)",
+                100,
+                3000,
+                1000,
+                100,
+                key="mm_gamma_limit_k_delta_per_1",
+                persist_state="page",
+            )
+            days = st.slider("Trading days", 5, 21, 21, key="mm_trading_days", persist_state="page")
+            n_paths = st.select_slider(
+                "Paths", [50, 100, 200, 500], value=200, key="mm_n_paths", persist_state="page"
+            )
+            seed = st.number_input(
+                "Random seed",
+                min_value=0,
+                value=2026,
+                step=1,
+                key="mm_random_seed",
+                persist_state="page",
+            )
         st.form_submit_button("Run simulation", type="primary")
 
     config = MMConfig(
@@ -100,7 +166,14 @@ def render(market: MarketData) -> None:
     left, right = st.columns(2)
     left.plotly_chart(charts.mm_vega(lab), key="mm_vega")
     right.plotly_chart(charts.mm_histogram(lab), key="mm_hist")
-    strategy = left.radio("Cumulative P&L for", list(lab.results), index=1, horizontal=True)
+    strategy = left.radio(
+        "Cumulative P&L for",
+        list(lab.results),
+        index=1,
+        horizontal=True,
+        key="mm_cumulative_p_l_for",
+        persist_state="page",
+    )
     left.plotly_chart(charts.mm_cumulative(lab, strategy), key="mm_cum")
     right.plotly_chart(charts.mm_quotes(lab), key="mm_quotes")
 

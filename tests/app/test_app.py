@@ -1,9 +1,10 @@
 """Smoke tests for the Streamlit dashboard, run headless with ``streamlit.testing.v1.AppTest``.
 
 The math is tested elsewhere; here we check that the app runs end to end without errors on
-the synthetic market, that every tab renders its charts, that the widgets drive the
-simulations, and that a saved snapshot shows up in the data-source dropdown and loads, and that the
-committed demo snapshot is used (with a banner) when there are no snapshots or one fails.
+the synthetic market, that every tab renders its charts (and only when it is open: tabs are
+lazy), that widget values and book edits survive switching tabs, that the widgets drive the
+simulations, that a saved snapshot shows up in the data-source dropdown and loads, and that
+the committed demo snapshot is used (with a banner) when there are no snapshots or one fails.
 Network access is blocked for every test (``tests/conftest.py``); loopback stays open for
 Streamlit's event loop.
 """
@@ -16,6 +17,7 @@ import pytest
 from streamlit.testing.v1 import AppTest
 
 from optdesk.data.store import save_snapshot
+from optdesk.pricing.portfolio import PRESETS
 from optdesk.surface.synthetic import synthetic_chain
 
 MAIN = Path(__file__).parents[2] / "src" / "optdesk" / "app" / "main.py"
@@ -42,6 +44,16 @@ def app():
     return at
 
 
+def _open(at: AppTest, tab: str) -> None:
+    """Click a tab: the tabs are keyed (``key="tab"``), so their state is the open label."""
+    at.session_state["tab"] = tab
+    at.run()
+
+
+def _metrics(at: AppTest) -> dict[str, str]:
+    return {m.label: m.value for m in at.metric}
+
+
 def _texts(at: AppTest) -> str:
     return " ".join(m.value for m in at.markdown) + " ".join(c.value for c in at.caption)
 
@@ -57,22 +69,62 @@ def test_app_runs_without_errors_on_the_synthetic_market(app):
     ]
     assert app.title[0].value == "Options desk: Synthetic SPY"
     assert app.sidebar.selectbox[0].value.label == "Synthetic SPY (SSVI)"
+    # lazy tabs: opening the app runs the Surface tab alone
+    assert len(app.get("plotly_chart")) == 2
+    assert "Mean P&L" not in _metrics(app)
 
 
-def test_every_tab_draws_its_charts(app):
-    # 2 surface + 5 hedging + 5 market maker + 4 portfolio
-    charts = app.get("plotly_chart")
-    assert len(charts) == 16
-    labels = {m.label for m in app.metric}
-    for expected in (
-        "Static arbitrage",
-        "Mean P&L",
-        "Derman-Kamal std",
-        "P&L std, A-S skew",
-        "Vega",
-        "Theta",
-    ):
-        assert expected in labels
+TAB_CONTENT = {  # charts drawn, and a metric only that tab shows
+    "Surface": (2, "Static arbitrage"),
+    "Hedging simulator": (5, "Derman-Kamal std"),
+    "Market maker": (5, "P&L std, A-S skew"),
+    "Portfolio Greeks": (4, "Vanna"),
+}
+
+
+def test_each_tab_draws_its_charts_only_when_open():
+    at = AppTest.from_file(str(MAIN), default_timeout=TIMEOUT)
+    at.run()
+    for tab, (n_charts, own_metric) in TAB_CONTENT.items():
+        _open(at, tab)
+        assert not at.exception, at.exception
+        assert len(at.get("plotly_chart")) == n_charts, tab
+        labels = set(_metrics(at))
+        assert own_metric in labels, tab
+        others = {m for t, (_, m) in TAB_CONTENT.items() if t != tab}
+        assert not labels & others, (tab, labels & others)  # closed tabs didn't run
+
+
+def test_widget_values_survive_switching_tabs():
+    at = AppTest.from_file(str(MAIN), default_timeout=TIMEOUT)
+    at.run()
+    _open(at, "Hedging simulator")
+    next(s for s in at.slider if s.label == "Days to expiry").set_value(120)
+    next(b for b in at.button if b.label == "Run simulation").click()
+    at.run()
+    premium = _metrics(at)["Premium"]
+    _open(at, "Surface")
+    _open(at, "Hedging simulator")
+    assert not at.exception, at.exception
+    assert next(s for s in at.slider if s.label == "Days to expiry").value == 120
+    assert _metrics(at)["Premium"] == premium  # same option, not the 91-day default
+
+
+def test_book_edits_survive_switching_tabs():
+    at = AppTest.from_file(str(MAIN), default_timeout=TIMEOUT)
+    at.run()
+    _open(at, "Portfolio Greeks")
+    value = float(_metrics(at)["Book value"].replace("$", "").replace(",", ""))
+    last = f"book::{next(iter(PRESETS))}::Synthetic SPY|american::last"
+    _open(at, "Surface")
+    # what the page stores after a user doubles every position in the table
+    book = at.session_state[last].copy()
+    book["quantity"] *= 2
+    at.session_state[last] = book
+    _open(at, "Portfolio Greeks")
+    assert not at.exception, at.exception
+    doubled = float(_metrics(at)["Book value"].replace("$", "").replace(",", ""))
+    assert doubled == pytest.approx(2 * value, abs=1.0)  # the edited book, not the preset
 
 
 def test_surface_metrics_show_a_clean_fit(app):
@@ -84,6 +136,7 @@ def test_surface_metrics_show_a_clean_fit(app):
 def test_hedging_widgets_drive_the_simulation():
     at = AppTest.from_file(str(MAIN), default_timeout=TIMEOUT)
     at.run()
+    _open(at, "Hedging simulator")
     before = {m.label: m.value for m in at.metric}["Mean P&L"]
     model = next(r for r in at.radio if r.label == "Price model")
     model.set_value("Heston (stochastic vol)")
@@ -99,6 +152,7 @@ def test_hedging_widgets_drive_the_simulation():
 def test_portfolio_delta_hedge_flattens_delta():
     at = AppTest.from_file(str(MAIN), default_timeout=TIMEOUT)
     at.run()
+    _open(at, "Portfolio Greeks")
     preset = next(s for s in at.selectbox if s.label == "Start from")
     preset.set_value("3m risk reversal (long 105% call, short 95% put)")
     at.run()
@@ -139,7 +193,7 @@ def test_no_snapshots_opens_on_the_demo_with_a_banner(monkeypatch):
     assert at.title[0].value == "Options desk: SPY 2026-10-22"
     assert "Demo snapshot from 2026-10-22" in _infos(at)
     assert not at.warning
-    assert len(at.get("plotly_chart")) == 16
+    assert len(at.get("plotly_chart")) == 2  # the Surface tab; the others run when opened
 
 
 def test_a_broken_snapshot_falls_back_to_the_demo(monkeypatch, tmp_path):

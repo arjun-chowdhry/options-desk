@@ -11,8 +11,21 @@ gitignored. The app then opens on the demo snapshot committed in ``data/demo/`` 
 source fails to load. A banner says so whenever the demo is showing.
 
 This file and ``views/`` only lay out widgets and call tested modules
-(``surface.market``, ``sim.lab``, ``pricing.portfolio``). Expensive work is cached: the
-market is built once per source, and each simulation once per set of parameters.
+(``surface.market``, ``sim.lab``, ``pricing.portfolio``).
+
+Keeping it light on a small server
+----------------------------------
+The free hosting tier has one shared CPU and about 1 GB of memory, so the app avoids work:
+
+- **The SVI fits are cached with ``st.cache_data``** (``fit_quotes``, the slow step: cleaning,
+  de-Americanizing, fitting). Data caching stores plain DataFrames and hands each caller a
+  copy, so no session can alter another's fits; ``max_entries`` caps memory. The assembled
+  market (fits plus surface objects, cheap to build) sits on top in ``st.cache_resource``.
+- **Only the open tab runs.** ``st.tabs(..., on_change="rerun")`` reruns the script when the
+  user switches tabs, and each tab draws only if it is ``.open``. Opening the app runs the
+  Surface tab alone (no market-making simulation, 2 charts sent instead of 16). Widgets keep
+  their values while their tab is closed (``persist_state="page"``).
+- Each simulation is cached once per set of parameters (``st.cache_data`` in ``views/``).
 """
 
 from __future__ import annotations
@@ -36,6 +49,7 @@ from optdesk.surface.market import (  # noqa: E402
     LoadedMarket,
     MarketSource,
     available_sources,
+    fit_quotes,
     load_market_or_demo,
 )
 
@@ -44,15 +58,28 @@ ROOT = Path(os.environ.get("OPTDESK_SNAPSHOT_ROOT", DEFAULT_ROOT))
 DEMO_ROOT = Path(
     os.environ.get("OPTDESK_DEMO_ROOT", Path(__file__).resolve().parents[3] / "data" / "demo")
 )
-TABS = ["Surface", "Hedging simulator", "Market maker", "Portfolio Greeks"]
+TABS = {
+    "Surface": surface,
+    "Hedging simulator": hedging,
+    "Market maker": market_maker,
+    "Portfolio Greeks": portfolio,
+}
 
 
-@st.cache_resource(show_spinner="Building the market: cleaning quotes and fitting SVI...")
+@st.cache_data(
+    show_spinner="Cleaning quotes and fitting SVI (first load only, under a minute)...",
+    max_entries=4,
+)
+def cached_fit(raw, curve, american: bool):
+    return fit_quotes(raw, curve, american)
+
+
+@st.cache_resource(max_entries=4)
 def get_market(
     kind: str, ticker: str | None, date: str | None, root: str, demo_root: str, american: bool
 ) -> LoadedMarket:
     source = MarketSource(kind, ticker, date)
-    return load_market_or_demo(source, root, american=american, demo_root=demo_root)
+    return load_market_or_demo(source, root, american=american, demo_root=demo_root, fit=cached_fit)
 
 
 def sidebar() -> LoadedMarket:
@@ -104,15 +131,12 @@ def main() -> None:
         st.warning(f"Couldn't load {loaded.error}. Showing the demo snapshot instead.")
     if loaded.demo_date:
         st.info(f"Demo snapshot from {loaded.demo_date}")
-    tabs = st.tabs(TABS)
-    with tabs[0]:
-        surface.render(market)
-    with tabs[1]:
-        hedging.render(market)
-    with tabs[2]:
-        market_maker.render(market)
-    with tabs[3]:
-        portfolio.render(market)
+    # Lazy tabs: switching tabs reruns the script, and only the open tab's view runs.
+    tabs = st.tabs(list(TABS), key="tab", on_change="rerun")
+    for tab, view in zip(tabs, TABS.values(), strict=True):
+        with tab:
+            if tab.open:
+                view.render(market)
 
 
 main()

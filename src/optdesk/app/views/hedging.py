@@ -27,12 +27,27 @@ def render(market: MarketData) -> None:
         option, vols, hedging = st.columns(3)
         with option:
             st.markdown("**Option**")
-            kind = st.radio("Type", ["call", "put"], horizontal=True)
-            side = st.radio("Position", ["long", "short"], horizontal=True)
-            strike = st.number_input(
-                "Strike", min_value=1.0, value=float(round(market.spot)), step=1.0
+            kind = st.radio(
+                "Type", ["call", "put"], horizontal=True, key="hedge_type", persist_state="page"
             )
-            days = st.slider("Days to expiry", 14, 365, 91)
+            side = st.radio(
+                "Position",
+                ["long", "short"],
+                horizontal=True,
+                key="hedge_position",
+                persist_state="page",
+            )
+            strike = st.number_input(
+                "Strike",
+                min_value=1.0,
+                value=float(round(market.spot)),
+                step=1.0,
+                key=f"hedge_strike::{market.key}",  # a new market starts at its own spot
+                persist_state="page",
+            )
+            days = st.slider(
+                "Days to expiry", 14, 365, 91, key="hedge_days_to_expiry", persist_state="page"
+            )
         with vols:
             st.markdown("**Volatility**")
             hedge_source = st.radio(
@@ -40,24 +55,112 @@ def render(market: MarketData) -> None:
                 ["From the surface", "Custom"],
                 horizontal=True,
                 help="'From the surface' reads the smile at this strike and expiry.",
+                key="hedge_implied_hedge_vol",
+                persist_state="page",
             )
-            custom_vol = st.slider("Custom implied vol (%)", 5.0, 80.0, 20.0, 0.5)
+            custom_vol = st.slider(
+                "Custom implied vol (%)",
+                5.0,
+                80.0,
+                20.0,
+                0.5,
+                key="hedge_custom_implied_vol",
+                persist_state="page",
+            )
             model = st.radio(
-                "Price model", ["GBM (constant vol)", "Heston (stochastic vol)"], horizontal=True
+                "Price model",
+                ["GBM (constant vol)", "Heston (stochastic vol)"],
+                horizontal=True,
+                key="hedge_price_model",
+                persist_state="page",
             )
-            realized = st.slider("Realized vol, GBM (%)", 5.0, 80.0, 20.0, 0.5)
+            realized = st.slider(
+                "Realized vol, GBM (%)",
+                5.0,
+                80.0,
+                20.0,
+                0.5,
+                key="hedge_realized_vol_gbm",
+                persist_state="page",
+            )
             with st.expander("Heston parameters"):
-                start_vol = st.slider("Starting vol (%)", 5.0, 60.0, 20.0, 0.5)
-                long_vol = st.slider("Long-run vol (%)", 5.0, 60.0, 20.0, 0.5)
-                kappa = st.slider("Mean reversion κ (per year)", 0.1, 10.0, 2.0, 0.1)
-                xi = st.slider("Vol of variance ξ", 0.05, 1.5, 0.5, 0.05)
-                rho = st.slider("Spot-vol correlation ρ", -0.95, 0.95, -0.7, 0.05)
+                start_vol = st.slider(
+                    "Starting vol (%)",
+                    5.0,
+                    60.0,
+                    20.0,
+                    0.5,
+                    key="hedge_starting_vol",
+                    persist_state="page",
+                )
+                long_vol = st.slider(
+                    "Long-run vol (%)",
+                    5.0,
+                    60.0,
+                    20.0,
+                    0.5,
+                    key="hedge_long_run_vol",
+                    persist_state="page",
+                )
+                kappa = st.slider(
+                    "Mean reversion κ (per year)",
+                    0.1,
+                    10.0,
+                    2.0,
+                    0.1,
+                    key="hedge_mean_reversion_per_year",
+                    persist_state="page",
+                )
+                xi = st.slider(
+                    "Vol of variance ξ",
+                    0.05,
+                    1.5,
+                    0.5,
+                    0.05,
+                    key="hedge_vol_of_variance",
+                    persist_state="page",
+                )
+                rho = st.slider(
+                    "Spot-vol correlation ρ",
+                    -0.95,
+                    0.95,
+                    -0.7,
+                    0.05,
+                    key="hedge_spot_vol_correlation",
+                    persist_state="page",
+                )
         with hedging:
             st.markdown("**Hedging**")
-            frequency = st.select_slider("Rebalance", list(FREQUENCIES), value="daily")
-            cost_bp = st.slider("Transaction cost (bp of price, half-spread)", 0.0, 20.0, 0.0)
-            n_paths = st.select_slider("Paths", [500, 1_000, 2_000, 5_000], value=2_000)
-            seed = st.number_input("Random seed", min_value=0, value=2026, step=1)
+            frequency = st.select_slider(
+                "Rebalance",
+                list(FREQUENCIES),
+                value="daily",
+                key="hedge_rebalance",
+                persist_state="page",
+            )
+            cost_bp = st.slider(
+                "Transaction cost (bp of price, half-spread)",
+                0.0,
+                20.0,
+                0.0,
+                key="hedge_transaction_cost_bp_of_price_half_spread",
+                persist_state="page",
+            )
+            n_paths = st.select_slider(
+                "Paths",
+                [500, 1_000, 2_000, 5_000],
+                value=2_000,
+                key="hedge_n_paths",
+                persist_state="page",
+            )
+            seed = st.number_input(
+                "Random seed",
+                min_value=0,
+                value=2026,
+                step=1,
+                key="hedge_random_seed",
+                persist_state="page",
+            )
         st.form_submit_button("Run simulation", type="primary")
 
     T = days / DAYS_PER_YEAR
