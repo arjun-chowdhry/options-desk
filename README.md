@@ -192,9 +192,11 @@ The time is the PC's local time, so set it to whatever is 3:15pm in New York.
 gitignored, so one real day is committed for hosting: `data/demo/SPY/2026-10-22.parquet`
 (28 expiries out to 2.25 years, about 300 KB). With no saved snapshots, the app opens on it.
 If the chosen snapshot fails to load, the app falls back to it as well. Either way, a
-"Demo snapshot from 2026-10-22" banner shows above the tabs. The first visit after the app
-wakes up fits that day's surface (about 25 seconds on a laptop, longer on the free tier);
-after that it is cached, and only the open tab runs. The headline numbers in this
+"Demo snapshot from 2026-10-22" banner shows above the tabs. Its SVI fit is committed too
+(`2026-10-22.fit.parquet`, about 230 KB), so the hosted app opens without refitting; the file
+carries a fingerprint of the snapshot, the fit settings and the fitting code, and is ignored
+(the app refits) if any of them changed. Regenerate it with `python scripts/fit_demo.py`.
+Saved and live snapshots are always fitted fresh, and only the open tab runs. The headline numbers in this
 README come from the 2026-10-19 chain, and the hosted demo shows 2026-10-22, so they differ
 slightly.
 

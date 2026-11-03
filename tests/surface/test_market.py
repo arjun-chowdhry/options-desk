@@ -119,8 +119,9 @@ def demo_market():
 
 
 def test_demo_snapshot_is_committed_small_and_fits(demo_market):
-    files = list(DEMO_ROOT.glob("*/*.parquet"))
+    files = [f for f in DEMO_ROOT.glob("*/*.parquet") if not f.name.endswith(".fit.parquet")]
     assert len(files) == 1 and files[0].stat().st_size < 1_000_000  # small enough for git
+    assert (DEMO_ROOT / "SPY" / "2026-10-22.fit.parquet").exists()  # its saved fit
     assert demo_source(DEMO_ROOT) == DEMO
     assert demo_market.label == "SPY 2026-10-22" and not demo_market.synthetic
     fits = demo_market.fits
@@ -179,8 +180,9 @@ def test_loaders_fit_through_the_injected_fitter(snapshot_root, tmp_path):
     )
     assert len(calls) == 1 and calls[0][1] is False  # once, with the caller's american
     assert (m.fits["rmse"] == 0.123).all()
-    # the fallback to the demo goes through the same fitter, so it is cached too
+    # the fallback to the demo loads the demo's saved fit, so the fitter isn't needed
     calls.clear()
     broken = MarketSource("snapshot", "SPY", "2026-10-01")
     loaded = load_market_or_demo(broken, tmp_path / "none", demo_root=DEMO_ROOT, fit=counting)
-    assert loaded.demo_date == "2026-10-22" and calls[0][1] is True and len(calls) == 1
+    assert loaded.demo_date == "2026-10-22" and calls == []
+    assert len(loaded.market.fits) == 28 and (loaded.market.fits["rmse"] != 0.123).all()

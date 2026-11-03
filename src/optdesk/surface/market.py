@@ -28,7 +28,8 @@ snapshots it is listed first, so a visitor opens on real market data, not the sy
 If the chosen source fails, ``load_market_or_demo`` loads the demo instead and reports why,
 so the app can say what happened. We fall back instead of showing an error page because a
 recruiter clicking a link should always see a working desk; the banner keeps it honest
-that the data is a fixed day, not today's market.
+that the data is a fixed day, not today's market. Its fit is saved next to it
+(``surface/saved_fit.py``), so the hosted app skips the slow clean-and-fit step for it.
 
 Rates from the chain, not the screen
 ------------------------------------
@@ -49,9 +50,10 @@ import pandas as pd
 
 from optdesk.data.clean import clean_chain
 from optdesk.data.rates import RateCurve
-from optdesk.data.store import DEFAULT_ROOT, list_snapshots, load_snapshot
+from optdesk.data.store import DEFAULT_ROOT, list_snapshots, load_snapshot, snapshot_path
 from optdesk.pricing.black_scholes import forward_price
 from optdesk.surface.arbitrage import check_surface
+from optdesk.surface.saved_fit import with_saved_fit
 from optdesk.surface.source import VolSurface, fitted_surface, synthetic_surface
 from optdesk.surface.svi import fit_chain
 
@@ -240,7 +242,11 @@ def load_market(
     demo_root: Path | str | None = None,
     fit: Fitter = fit_quotes,
 ) -> MarketData:
-    """Load whichever source was chosen (a ``"demo"`` source is read from ``demo_root``)."""
+    """Load whichever source was chosen (a ``"demo"`` source is read from ``demo_root``).
+
+    Only the demo uses a saved fit (``surface/saved_fit.py``), and only while its
+    fingerprint matches; synthetic and saved snapshots are always fitted with ``fit``.
+    """
     if source.kind == "synthetic":
         return synthetic_market(fit=fit)
     if source.kind == "snapshot":
@@ -248,7 +254,8 @@ def load_market(
     if source.kind == "demo":
         if demo_root is None:
             raise ValueError("a demo source needs demo_root")
-        return snapshot_market(source.ticker, source.date, demo_root, american=american, fit=fit)
+        saved = with_saved_fit(snapshot_path(source.ticker, source.date, demo_root), fit)
+        return snapshot_market(source.ticker, source.date, demo_root, american=american, fit=saved)
     raise ValueError(f"unknown source kind {source.kind!r}")
 
 

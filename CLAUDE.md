@@ -25,6 +25,7 @@ ruff check .                            # lint
 ruff format .                           # auto-format
 streamlit run src/optdesk/app/main.py   # dashboard (from M5)
 python scripts/snapshot.py              # save today's SPY snapshot (Task Scheduler: weekdays 2:15pm Central)
+python scripts/fit_demo.py              # regenerate the demo's saved fit (when its test says stale)
 ```
 
 ## Conventions
@@ -38,6 +39,10 @@ python scripts/snapshot.py              # save today's SPY snapshot (Task Schedu
 - Randomness goes through a seeded `np.random.Generator`, so simulations are reproducible.
 - The Streamlit app holds no math; it only calls tested modules.
 - yfinance (`data/fetch.py`) is the only network code; mock it in tests.
+- The demo's saved fit is fingerprinted (snapshot bytes, fit settings, source of every module in
+  `saved_fit.FIT_MODULES`). Editing any of those modules makes it stale: the app then refits
+  (slow but correct) and `test_committed_demo_fit_is_current` fails until you run
+  `python scripts/fit_demo.py` and commit the new `.fit.parquet`.
 
 ## Structure
 
@@ -46,12 +51,14 @@ src/optdesk/
   pricing/  black_scholes.py, greeks.py, implied_vol.py, binomial.py, portfolio.py
   data/     fetch.py, clean.py, rates.py, store.py
   surface/  svi.py, arbitrage.py, plot.py, synthetic.py, source.py (swappable VolSurface),
-            market.py (MarketData bundle: synthetic or snapshot, the app's data source)
+            market.py (MarketData bundle: synthetic or snapshot, the app's data source),
+            saved_fit.py (the demo's committed fit, used only while its fingerprint matches)
   sim/      paths.py, hedging.py, plot.py, market_maker.py, mm_plot.py, lab.py (app experiments)
   app/      main.py (sidebar + tabs), views/ (one file per tab), charts.py (Plotly figures)
 tests/      mirrors the above; fixtures/ holds a saved chain for offline tests
 data/snapshots/   gitignored, {TICKER}/{YYYY-MM-DD}.parquet
-data/demo/        committed: SPY/2026-10-22.parquet, the hosted app's fallback (Streamlit Cloud)
+data/demo/        committed: SPY/2026-10-22.parquet, the hosted app's fallback (Streamlit Cloud),
+                  and SPY/2026-10-22.fit.parquet, its saved fit (regenerate: scripts/fit_demo.py)
 data/plots/       gitignored, HTML output of python -m optdesk.surface.plot
 ```
 
