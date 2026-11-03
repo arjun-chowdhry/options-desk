@@ -186,6 +186,14 @@ Register-ScheduledTask -TaskName "optdesk SPY snapshot" -Action $action -Trigger
 
 The time is the PC's local time, so set it to whatever is 3:15pm in New York.
 
+**Hosting (Streamlit Community Cloud).** Deploy from this repo with main file path
+`src/optdesk/app/main.py` and Python 3.13 (under Advanced settings). The server installs
+`requirements.txt`: pinned dependencies plus the package itself (`-e .`). Saved snapshots are
+gitignored, so one real day is committed for hosting: `data/demo/SPY/2026-10-22.parquet`
+(28 expiries out to 2.25 years, about 300 KB). With no saved snapshots, the app opens on it.
+If the chosen snapshot fails to load, the app falls back to it as well. Either way, a
+"Demo snapshot from 2026-10-22" banner shows above the tabs.
+
 ## Assumptions and limitations
 
 **Pricing**
