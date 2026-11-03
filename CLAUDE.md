@@ -51,6 +51,7 @@ src/optdesk/
   app/      main.py (sidebar + tabs), views/ (one file per tab), charts.py (Plotly figures)
 tests/      mirrors the above; fixtures/ holds a saved chain for offline tests
 data/snapshots/   gitignored, {TICKER}/{YYYY-MM-DD}.parquet
+data/demo/        committed: SPY/2026-10-22.parquet, the hosted app's fallback (Streamlit Cloud)
 data/plots/       gitignored, HTML output of python -m optdesk.surface.plot
 ```
 

@@ -19,6 +19,17 @@ Two sources
   (de-Americanized for SPY), fitted per expiry with SVI and interpolated in total variance
   (``SVISurface``). The fit is the only surface we have, so it is also the pricing surface.
 
+A demo snapshot for fresh servers
+---------------------------------
+``data/snapshots/`` is gitignored, so a fresh deployment (Streamlit Community Cloud) has no
+saved days at all, and a saved day can fail to load (a corrupt file, a chain too thin to
+fit). One real SPY snapshot is committed under ``data/demo/`` for both cases. With no saved
+snapshots it is listed first, so a visitor opens on real market data, not the synthetic one.
+If the chosen source fails, ``load_market_or_demo`` loads the demo instead and reports why,
+so the app can say what happened. We fall back instead of showing an error page because a
+recruiter clicking a link should always see a working desk; the banner keeps it honest
+that the data is a fixed day, not today's market.
+
 Rates from the chain, not the screen
 ------------------------------------
 For a snapshot, ``r`` is the Treasury curve at the expiry nearest 3 months and ``q`` is the
@@ -45,11 +56,14 @@ from optdesk.surface.svi import fit_chain
 
 __all__ = [
     "SYNTHETIC",
+    "LoadedMarket",
     "MarketData",
     "MarketSource",
     "available_sources",
     "carry_from_fits",
+    "demo_source",
     "load_market",
+    "load_market_or_demo",
     "snapshot_market",
     "synthetic_market",
 ]
@@ -91,13 +105,17 @@ class MarketData:
 class MarketSource:
     """A choice in the data-source dropdown: the synthetic market or one saved snapshot."""
 
-    kind: str  # "synthetic" or "snapshot"
+    kind: str  # "synthetic", "snapshot" or "demo" (the snapshot committed in data/demo/)
     ticker: str | None = None
     date: str | None = None  # YYYY-MM-DD
 
     @property
     def label(self) -> str:
-        return "Synthetic SPY (SSVI)" if self.kind == "synthetic" else f"{self.ticker} {self.date}"
+        if self.kind == "synthetic":
+            return "Synthetic SPY (SSVI)"
+        if self.kind == "demo":
+            return f"Demo: {self.ticker} {self.date}"
+        return f"{self.ticker} {self.date}"
 
 
 SYNTHETIC = MarketSource("synthetic")
@@ -161,24 +179,87 @@ def snapshot_market(
     )
 
 
-def available_sources(root: Path | str = DEFAULT_ROOT) -> list[MarketSource]:
-    """The synthetic market first, then every saved snapshot under ``root`` (newest first)."""
-    snapshots = []
+def _saved(root: Path | str, kind: str) -> list[MarketSource]:
+    """Every snapshot under ``root`` as a source of ``kind``, newest first."""
+    found = []
     root = Path(root)
     if root.is_dir():
         for folder in sorted(p for p in root.iterdir() if p.is_dir()):
             for day in list_snapshots(folder.name, root):
-                snapshots.append(MarketSource("snapshot", folder.name.upper(), f"{day:%Y-%m-%d}"))
-    snapshots.sort(key=lambda s: (s.date, s.ticker), reverse=True)
-    return [SYNTHETIC, *snapshots]
+                found.append(MarketSource(kind, folder.name.upper(), f"{day:%Y-%m-%d}"))
+    found.sort(key=lambda s: (s.date, s.ticker), reverse=True)
+    return found
+
+
+def demo_source(demo_root: Path | str | None) -> MarketSource | None:
+    """The newest snapshot committed under ``demo_root``, or None if there is none."""
+    if demo_root is None:
+        return None
+    found = _saved(demo_root, "demo")
+    return found[0] if found else None
+
+
+def available_sources(
+    root: Path | str = DEFAULT_ROOT, demo_root: Path | str | None = None
+) -> list[MarketSource]:
+    """The dropdown's choices: synthetic, then every saved snapshot under ``root`` (newest first).
+
+    With no saved snapshots (a fresh server), the demo snapshot under ``demo_root`` comes
+    first instead, so the app opens on real data; the synthetic market stays as a choice.
+    """
+    snapshots = _saved(root, "snapshot")
+    demo = None if snapshots else demo_source(demo_root)
+    return [SYNTHETIC, *snapshots] if demo is None else [demo, SYNTHETIC]
 
 
 def load_market(
-    source: MarketSource, root: Path | str = DEFAULT_ROOT, *, american: bool = True
+    source: MarketSource,
+    root: Path | str = DEFAULT_ROOT,
+    *,
+    american: bool = True,
+    demo_root: Path | str | None = None,
 ) -> MarketData:
-    """Load whichever source was chosen."""
+    """Load whichever source was chosen (a ``"demo"`` source is read from ``demo_root``)."""
     if source.kind == "synthetic":
         return synthetic_market()
     if source.kind == "snapshot":
         return snapshot_market(source.ticker, source.date, root, american=american)
+    if source.kind == "demo":
+        if demo_root is None:
+            raise ValueError("a demo source needs demo_root")
+        return snapshot_market(source.ticker, source.date, demo_root, american=american)
     raise ValueError(f"unknown source kind {source.kind!r}")
+
+
+@dataclass(frozen=True)
+class LoadedMarket:
+    """A loaded market plus what the app should tell the user about where it came from."""
+
+    market: MarketData
+    demo_date: str | None = None  # YYYY-MM-DD when the demo snapshot is what's showing
+    error: str | None = None  # why the chosen source failed, when we fell back to the demo
+
+
+def load_market_or_demo(
+    source: MarketSource,
+    root: Path | str = DEFAULT_ROOT,
+    *,
+    american: bool = True,
+    demo_root: Path | str | None = None,
+) -> LoadedMarket:
+    """Load ``source``; if that fails for any reason, load the demo snapshot instead.
+
+    Any exception counts (missing or corrupt file, a chain with no fittable expiry), since
+    the point is that the dashboard always opens. The original error is kept in
+    ``LoadedMarket.error`` for the app to display. With no demo snapshot, or if the demo
+    itself was the source that failed, the error is raised as usual.
+    """
+    demo = demo_source(demo_root)
+    try:
+        market = load_market(source, root, american=american, demo_root=demo_root)
+    except Exception as exc:
+        if demo is None or source == demo:
+            raise
+        market = load_market(demo, root, american=True, demo_root=demo_root)  # SPY: American
+        return LoadedMarket(market, demo.date, f"{source.label}: {exc}")
+    return LoadedMarket(market, source.date if source.kind == "demo" else None)

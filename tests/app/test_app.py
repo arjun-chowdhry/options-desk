@@ -2,7 +2,8 @@
 
 The math is tested elsewhere; here we check that the app runs end to end without errors on
 the synthetic market, that every tab renders its charts, that the widgets drive the
-simulations, and that a saved snapshot shows up in the data-source dropdown and loads.
+simulations, and that a saved snapshot shows up in the data-source dropdown and loads, and that the
+committed demo snapshot is used (with a banner) when there are no snapshots or one fails.
 Network access is blocked for every test (``tests/conftest.py``); loopback stays open for
 Streamlit's event loop.
 """
@@ -18,13 +19,16 @@ from optdesk.data.store import save_snapshot
 from optdesk.surface.synthetic import synthetic_chain
 
 MAIN = Path(__file__).parents[2] / "src" / "optdesk" / "app" / "main.py"
+DEMO_ROOT = Path(__file__).parents[2] / "data" / "demo"
 TIMEOUT = 180  # seconds; the first run builds and fits the synthetic market
 
 
 @pytest.fixture(autouse=True)
 def isolated(monkeypatch, tmp_path):
-    """An empty snapshot folder unless a test saves one (the network is blocked globally)."""
+    """An empty snapshot folder unless a test saves one (the network is blocked globally),
+    and no demo snapshot unless a test points at it, so the default stays synthetic."""
     monkeypatch.setenv("OPTDESK_SNAPSHOT_ROOT", str(tmp_path / "snapshots"))
+    monkeypatch.setenv("OPTDESK_DEMO_ROOT", str(tmp_path / "no-demo"))
 
 
 @pytest.fixture(scope="module")
@@ -32,6 +36,7 @@ def app():
     """One app run shared by the read-only checks (it takes a while to build)."""
     with pytest.MonkeyPatch.context() as mp:
         mp.setenv("OPTDESK_SNAPSHOT_ROOT", str(Path("does-not-exist")))
+        mp.setenv("OPTDESK_DEMO_ROOT", str(Path("does-not-exist")))
         at = AppTest.from_file(str(MAIN), default_timeout=TIMEOUT)
         at.run()
     return at
@@ -119,3 +124,34 @@ def test_a_saved_snapshot_appears_and_loads(tmp_path):
     assert not at.exception, at.exception
     assert at.title[0].value == "Options desk: SPY 2026-10-16"
     assert {m.label: m.value for m in at.metric}["Static arbitrage"] == "None found"
+
+
+def _infos(at: AppTest) -> list[str]:
+    return [i.value for i in at.info]
+
+
+def test_no_snapshots_opens_on_the_demo_with_a_banner(monkeypatch):
+    monkeypatch.setenv("OPTDESK_DEMO_ROOT", str(DEMO_ROOT))
+    at = AppTest.from_file(str(MAIN), default_timeout=TIMEOUT)
+    at.run()
+    assert not at.exception, at.exception
+    assert at.sidebar.selectbox[0].options == ["Demo: SPY 2026-10-22", "Synthetic SPY (SSVI)"]
+    assert at.title[0].value == "Options desk: SPY 2026-10-22"
+    assert "Demo snapshot from 2026-10-22" in _infos(at)
+    assert not at.warning
+    assert len(at.get("plotly_chart")) == 16
+
+
+def test_a_broken_snapshot_falls_back_to_the_demo(monkeypatch, tmp_path):
+    monkeypatch.setenv("OPTDESK_DEMO_ROOT", str(DEMO_ROOT))
+    corrupt = tmp_path / "snapshots" / "SPY" / "2026-10-01.parquet"
+    corrupt.parent.mkdir(parents=True)
+    corrupt.write_bytes(b"not a parquet file")
+    at = AppTest.from_file(str(MAIN), default_timeout=TIMEOUT)
+    at.run()
+    at.sidebar.selectbox[0].select_index(1)  # "SPY 2026-10-01", the broken file
+    at.run()
+    assert not at.exception, at.exception
+    assert at.title[0].value == "Options desk: SPY 2026-10-22"
+    assert "Demo snapshot from 2026-10-22" in _infos(at)
+    assert at.warning[0].value.startswith("Couldn't load SPY 2026-10-01")
