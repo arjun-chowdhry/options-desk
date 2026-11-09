@@ -48,8 +48,13 @@ def test_committed_demo_fit_matches_a_fresh_fit():
 
     pd.testing.assert_frame_equal(saved_clean, clean, check_exact=False, rtol=1e-9)
     pd.testing.assert_frame_equal(saved_fits[FLAGS], fits[FLAGS])
-    cols = ["T", "forward", "rmse", "max_error"]
-    np.testing.assert_allclose(saved_fits[cols], fits[cols], rtol=1e-9)
+    # The saved fit was made on Windows and CI refits on Linux, so the numbers differ by
+    # floating-point noise. rmse and max_error are small (about 0.001), which makes a purely
+    # relative test too strict for them, so they also get an absolute 0.0001 vol points.
+    inputs = ["T", "forward"]
+    np.testing.assert_allclose(saved_fits[inputs], fits[inputs], rtol=1e-6)
+    errors = ["rmse", "max_error"]
+    np.testing.assert_allclose(saved_fits[errors], fits[errors], rtol=1e-6, atol=1e-6)
     # what the app prices with: the vol of each fitted smile, compared on a strike grid
     k = np.linspace(-0.4, 0.2, 61)
     saved_surface, fresh_surface = fitted_surface(saved_fits), fitted_surface(fits)
