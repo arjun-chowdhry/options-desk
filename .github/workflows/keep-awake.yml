@@ -1,0 +1,49 @@
+# Keep the hosted Streamlit app awake: every 6 hours, visit it in a headless browser and click
+# the wake-up button if it has gone to sleep. A run fails (red X) if the app never loads.
+#
+# - Streamlit Community Cloud puts an app to sleep after 12 hours without traffic, so a visit
+#   every 6 hours leaves room for a late or skipped run.
+# - Scheduled runs only start once this file is on the default branch (main), and GitHub can
+#   delay them when it is busy.
+# - GitHub turns off schedules in public repositories after 60 days with no repository activity.
+#   If that happens, re-enable the workflow from the Actions tab.
+# - Read-only and no secrets: the job only needs to read this repository and open a public page.
+# - Actions are pinned to full commit hashes, which can't be moved later the way a tag like
+#   "v5" can. The comment beside each one records its version. Python packages are pinned
+#   exactly, and each Playwright release fixes its own Chromium build.
+
+name: Keep app awake
+
+on:
+  schedule:
+    - cron: "17 */6 * * *" # 00:17, 06:17, 12:17, 18:17 UTC; GitHub's top-of-hour rush is avoided
+  workflow_dispatch: # also allow a manual run from the Actions tab
+
+permissions:
+  contents: read
+
+concurrency: # never run two visits at once
+  group: keep-awake
+  cancel-in-progress: false
+
+jobs:
+  visit:
+    name: Visit the app
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+        with:
+          python-version-file: .python-version
+
+      - name: Install Playwright and Chromium
+        run: |
+          pip install playwright==1.64.1 greenlet==3.5.6 pyee==14.0.0 typing_extensions==4.16.0
+          python -m playwright install --with-deps chromium
+
+      - name: Visit the app
+        run: python scripts/keep_awake.py
