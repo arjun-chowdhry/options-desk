@@ -60,7 +60,9 @@ def test_committed_demo_fit_matches_a_fresh_fit():
     saved_surface, fresh_surface = fitted_surface(saved_fits), fitted_surface(fits)
     for T in fits["T"]:
         diff = saved_surface.implied_vol(k, T) - fresh_surface.implied_vol(k, T)
-        assert np.max(np.abs(diff)) < 1e-6, T  # 0.0001 vol points
+        # 1e-4 as a vol is 0.01 vol points: room for Windows-vs-Linux fit noise (a refit lands
+        # slightly differently), yet far below the best fit errors (about 0.2 vol points).
+        assert np.max(np.abs(diff)) < 1e-4, T
 
 
 # --- refit rules, on a small synthetic snapshot (fits in a few seconds) --------------------
